@@ -1,0 +1,19 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model containerserver {
+  id     String  @id @default(uuid())
+  name   String  @unique
+  host   String  @unique
+  port   Int     @default(2375)
+  enable Boolean @default(true)
+}
