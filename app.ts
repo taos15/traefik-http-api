@@ -10,9 +10,9 @@ export const app = express();
 
 const prisma = new PrismaClient();
 
+app.use(cors());
 app.use(express.json());
 app.use(morgan("dev"));
-app.use(cors());
 app.use(express.static(path.join(__dirname, "./ui")));
 
 let congFile;
