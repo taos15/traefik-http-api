@@ -34,7 +34,8 @@ coverage
 *.lcov
 
 # Compiled output
-**/dist/
+/dist/
+
 dist-ssr
 *.local
 
