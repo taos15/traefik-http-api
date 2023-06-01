@@ -52,7 +52,7 @@ labels:
     - traefik.enable=true # reverse proxy the container
     - traefik.name=soemthing # router and services name
     - traefik.hostname=someApplicationName # oeverwrite the hostname like overwritten.domain.tld
-    - traefik.middlewares=something,something, something@file, somthingelse@http # comma separated middlewares, the server convert it to an array, default to auth
+    - traefik.middlewares=something,something,something@file,somthingelse@http # comma separated middlewares, the server convert it to an array, default to auth
     - authelia_auth=false # by defaul the server add authelia to as middleware (auth), if you set the middleware label this get overwritten, this label only works when no middlewares will defined in the traefik.middlewares label
     - traefik.entrypoints=someEntrypoints,anotheEntrypoints # comma separated entrypoints, the server convert it to an array, defualt to https
 ```
