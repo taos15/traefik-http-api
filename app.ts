@@ -179,7 +179,4 @@ app.get("/api/:ver/traefikconfig", async (req, res) => {
         console.log(`Endpoint requested: ${req.originalUrl}`, err);
         res.status(500).send("Something went wrong.");
     }
-    app.get("*", (req, res) => {
-        res.sendFile(path.join(__dirname, "./ui/index.html"));
-    });
 });

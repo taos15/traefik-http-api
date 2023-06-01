@@ -42,7 +42,7 @@ dist-ssr
 # Environment variables
 *.override.env
 .env
-**/.env.local*
+
 
 # Editor directories and files
 # Visual Studio Code
