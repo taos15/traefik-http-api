@@ -61,7 +61,7 @@ You can set this labels in your container to overwrite default values
 
 ```yaml
 environment:
-    - DOMAIN=taos15.net # your domain name
+    - DOMAIN=domain.tld # your domain name
     - DATABASE_URL=file:./db/dev.db # database url, for future use to be able to change the sqlite to another database like postgres
 
 ```
