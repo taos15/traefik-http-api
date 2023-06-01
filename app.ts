@@ -105,14 +105,13 @@ app.get("/api/:ver/traefikconfig", async (req, res) => {
                 headers: { name: docker.name },
             });
         });
-
         const containerList = await Promise.all(
             dockerServersInstances.map(async (dockerInstance) => {
                 const containers = await dockerInstance.listContainers(req.query);
                 return containers.map((container) => ({
                     ...container,
-                    serverName: (dockerInstance as any).modem.headers?.name,
-                    serverHostname: (dockerInstance.modem as any).host,
+                    serverName: (dockerInstance as any).modem.headers?.name as string,
+                    serverHostname: (dockerInstance.modem as any).host as string,
                 }));
             }),
         );
@@ -138,16 +137,21 @@ app.get("/api/:ver/traefikconfig", async (req, res) => {
             (itemTofilter) =>
                 itemTofilter.Labels["traefik.enable"] === "true" || itemTofilter.Labels["swag"] === "enable",
         );
-        // const traefikRoutes = routers.filter((itemTofilter) => itemTofilter.Labels["traefik.enable"] === "true");
         const filteredRoutes = traefikRoutes.map((container) => {
-            const keyName = container.Name.replace(/^\//, "").replace(/^\w/, (c) => c.toUpperCase());
-            const middlewaresLabel = container.Labels["authelia_auth"] === "false" ? [] : ["auth"];
+            const keyName =
+                container.Labels["traefik.name"] ??
+                container.Name.replace(/^\//, "").replace(/^\w/, (c) => c.toUpperCase());
+            const constainerHostname = container.Labels["traefik.hostname"] ?? keyName;
+            const containerMiddlewares: string[] =
+                container.Labels["traefik.middlewares"]?.split(",") ??
+                (container.Labels["authelia_auth"] === "false" ? [] : ["auth"]);
+            const containerEntrypoints = container.Labels["traefik.entrypoints"]?.split(",") ?? ["https"];
             return {
                 [keyName]: {
-                    entryPoints: ["https"],
-                    rule: `Host(` + `\`` + keyName + `.taos15.net\`)`,
+                    entryPoints: containerEntrypoints,
+                    rule: `Host(` + `\`` + constainerHostname + `.taos15.net\`)`,
                     service: keyName,
-                    middlewares: middlewaresLabel,
+                    middlewares: containerMiddlewares,
                 },
             };
         });
@@ -156,15 +160,15 @@ app.get("/api/:ver/traefikconfig", async (req, res) => {
 
         const filteredServices = traefikRoutes.map((container) => {
             const keyName = container.Name.replace(/^\//, "").replace(/^\w/, (c) => c.toUpperCase());
+            const containerWebuiPort =
+                container.Labels["traefik.webuiport"]?.split(",") ??
+                container.Ports[container.Ports.findIndex((obj) => obj.IP === "0.0.0.0")]?.PublicPort;
             return {
                 [keyName]: {
                     loadBalancer: {
                         servers: [
                             {
-                                url: `${container.serverHostname}:${
-                                    container.Ports[container.Ports.findIndex((obj) => obj.IP === "0.0.0.0")]
-                                        ?.PublicPort
-                                }`,
+                                url: `${container.serverHostname}:${containerWebuiPort}`,
                             },
                         ],
                     },
