@@ -68,7 +68,7 @@ dist-ssr
 *.sw?
 
 # databases
-**/*.db
+**/*.db*
 **/prisma/migrations/*
 
 # local files

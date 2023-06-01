@@ -4,11 +4,11 @@
   "description": "",
   "main": "index.ts",
   "scripts": {
-    "start": "lsof -ti :4000 | xargs kill -9 && NODE_ENV=production npm run prisma:db:push && node dist/index.js",
-    "build": "npx tsc && prisma db push && prisma generate",
+    "start": " NODE_ENV=production node dist/index.js",
+    "build": "npx prisma migrate dev --name init && npx prisma generate && npx tsc",
     "start:ts": "npx tsc --watch",
     "start:watch": "nodemon dist/index.js",
-    "start:dev": "lsof -ti :4000 | xargs kill -9 && concurrently \"npm run start:ts\" \"npm run start:watch\"",
+    "start:dev": "concurrently \"npm run start:ts\" \"npm run start:watch\"",
     "prisma:db:push": "npx prisma db push",
     "migarte:dev": "prisma migrate dev"
   },
