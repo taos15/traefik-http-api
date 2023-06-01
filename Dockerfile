@@ -5,16 +5,23 @@ FROM node:20
 WORKDIR /app
 
 # Copy package.json, package-lock.json, and pnpm-lock.yaml to the working directory
-COPY package*.json pnpm-lock.yaml ./
+COPY package*.json .
 
 # Install pnpm globally
 RUN npm install -g pnpm
 
-# Install dependencies using pnpm
-RUN pnpm install --frozen-lockfile
-
 # Copy the rest of the application code to the working directory
 COPY . .
+
+# Install dependencies using pnpm
+RUN pnpm install 
+
+
+# Create .env file
+RUN mv /app/.env.example /app/.env
+
+# Create .env file
+RUN mv /app/config/traefikConfigTemplate.ts.example /app/config/traefikConfigTemplate.ts
 
 # Build the TypeScript project
 RUN pnpm run build
@@ -23,4 +30,4 @@ RUN pnpm run build
 EXPOSE 4000
 
 # Start the Express app
-CMD ["pnpm", "start"]
+CMD ["npm", "run", "start"]

@@ -99,7 +99,7 @@ app.get("/api/:ver/", (req, res) => {
 app.get("/api/:ver/traefikconfig", async (req, res) => {
     try {
         const servers = await prisma.containerserver.findMany();
-        const dockerServersInstances = servers.map((docker) => {
+        const dockerServersInstances = servers.map((docker: any) => {
             return new Docker({
                 host: docker.host,
                 port: docker.port,
@@ -107,9 +107,9 @@ app.get("/api/:ver/traefikconfig", async (req, res) => {
             });
         });
         const containerList = await Promise.all(
-            dockerServersInstances.map(async (dockerInstance) => {
+            dockerServersInstances.map(async (dockerInstance: any) => {
                 const containers = await dockerInstance.listContainers(req.query);
-                return containers.map((container) => ({
+                return containers.map((container: any) => ({
                     ...container,
                     serverName: (dockerInstance as any).modem.headers?.name as string,
                     serverHostname: (dockerInstance.modem as any).host as string,
@@ -141,7 +141,7 @@ app.get("/api/:ver/traefikconfig", async (req, res) => {
         const filteredRoutes = traefikRoutes.map((container) => {
             const keyName =
                 container.Labels["traefik.name"] ??
-                container.Name.replace(/^\//, "").replace(/^\w/, (c) => c.toUpperCase());
+                container.Name.replace(/^\//, "").replace(/^\w/, (c: any) => c.toUpperCase());
             const constainerHostname = container.Labels["traefik.hostname"] ?? keyName;
             const containerMiddlewares: string[] =
                 container.Labels["traefik.middlewares"]?.split(",") ??
@@ -160,10 +160,10 @@ app.get("/api/:ver/traefikconfig", async (req, res) => {
         Object.assign(traefik.http.routers, ...filteredRoutes);
 
         const filteredServices = traefikRoutes.map((container) => {
-            const keyName = container.Name.replace(/^\//, "").replace(/^\w/, (c) => c.toUpperCase());
+            const keyName = container.Name.replace(/^\//, "").replace(/^\w/, (c: any) => c.toUpperCase());
             const containerWebuiPort =
                 container.Labels["traefik.webuiport"]?.split(",") ??
-                container.Ports[container.Ports.findIndex((obj) => obj.IP === "0.0.0.0")]?.PublicPort;
+                container.Ports[container.Ports.findIndex((obj: any) => obj.IP === "0.0.0.0")]?.PublicPort;
             return {
                 [keyName]: {
                     loadBalancer: {
