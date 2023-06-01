@@ -7,7 +7,7 @@ export let traefik = {
             auth: {
                 forwardauth: {
                     // Change the ip: port to match your authelia, and domain.tld to match you domain name
-                    address: "http://192.168.1.1:9091/api/verify?rd=https://authelia.yourdomain.tld/",
+                    address: `http://192.168.1.1:9091/api/verify?rd=https://authelia.${process.env.DOMAIN}/`,
                     trustForwardHeader: true,
                     authResponseHeaders: ["Remote-User", "Remote-Groups", "Remote-Name", "Remote-Email"],
                 },

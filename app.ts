@@ -16,6 +16,7 @@ app.use(morgan("dev"));
 app.use(express.static(path.join(__dirname, "./ui")));
 
 let congFile;
+const domain = process.env.DOMAIN;
 
 app.get("/api/:ver/servers", async (req, res) => {
     try {
@@ -149,7 +150,7 @@ app.get("/api/:ver/traefikconfig", async (req, res) => {
             return {
                 [keyName]: {
                     entryPoints: containerEntrypoints,
-                    rule: `Host(` + `\`` + constainerHostname + `.taos15.net\`)`,
+                    rule: `Host(` + `\`` + constainerHostname + `.${domain}\`)`,
                     service: keyName,
                     middlewares: containerMiddlewares,
                 },
