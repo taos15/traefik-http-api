@@ -42,5 +42,29 @@ you need to add a `http` provider to your traefik static config. It looks like t
 ```
 Change the IP address to the IP of the server running the api server.
 
+# Container options
+
+## Labels
+You can set this labels in your container to overwrite default values
+
+```yaml
+labels:
+    - traefik.enable=true # reverse proxy the container
+    - traefik.name=soemthing # router and services name
+    - traefik.hostname=someApplicationName # oeverwrite the hostname like overwritten.domain.tld
+    - traefik.middlewares=something,something # comma separated middlewares, the server convert it to an array, default to auth
+    - authelia_auth=false # by defaul the server add authelia to as middleware (auth), if you set the middleware label this get overwritten, this label only works when no middlewares will defined in the traefik.middlewares label
+    - traefik.entrypoints=someEntrypoints,anotheEntrypoints # comma separated entrypoints, the server convert it to an array, defualt to https
+```
+## Environment variables
+You can set this labels in your container to overwrite default values
+
+```yaml
+environment:
+    - DOMAIN=taos15.net # your domain name
+    - DATABASE_URL=file:./db/dev.db # database url, for future use to be able to change the sqlite to another database like postgres
+
+```
+
 ## Notes
 The server that you the api to get the runnig containers running needs to have a dockersocket proxy running. 
