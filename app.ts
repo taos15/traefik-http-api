@@ -141,12 +141,13 @@ app.get("/api/:ver/traefikconfig", async (req, res) => {
         // const traefikRoutes = routers.filter((itemTofilter) => itemTofilter.Labels["traefik.enable"] === "true");
         const filteredRoutes = traefikRoutes.map((container) => {
             const keyName = container.Name.replace(/^\//, "").replace(/^\w/, (c) => c.toUpperCase());
+            const middlewaresLabel = container.Labels["swag_auth"] === "authelia" ? ["auth"] : [];
             return {
                 [keyName]: {
                     entryPoints: ["https"],
                     rule: `Host(` + `\`` + keyName + `.taos15.net\`)`,
                     service: keyName,
-                    middlewares: ["auth"],
+                    middlewares: middlewaresLabel,
                 },
             };
         });
