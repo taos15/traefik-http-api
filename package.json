@@ -1,42 +1,43 @@
 {
-  "name": "traefik-config-api",
-  "version": "1.0.0",
-  "description": "",
-  "main": "dist/index.js",
-  "scripts": {
-    "start": "node ./dist/index.js",
-    "build": "npx tsc ",
-    "build2": "prisma migrate dev --name init &&  prisma generate",
-    "start:ts": "npx tsc --watch",
-    "start:watch": "nodemon dist/index.js",
-    "start:dev": "concurrently \"npm run start:ts\" \"npm run start:watch\"",
-    "prisma:db:push": "prisma db push",
-    "migarte:dev": "prisma migrate dev"
-  },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
-  "devDependencies": {
-    "@types/cors": "^2.8.13",
-    "@types/dockerode": "^3.3.18",
-    "@types/express": "^4.17.17",
-    "@types/morgan": "^1.9.4",
-    "@types/node": "^20.2.5",
-    "concurrently": "^8.0.1",
-    "cors": "^2.8.5",
-    "dotenv": "^16.0.3",
-    "express": "^4.18.2",
-    "morgan": "^1.10.0",
-    "nodemon": "^2.0.22",
-    "prisma": "^4.14.1",
-    "ts-node": "^10.9.1",
-    "typescript": "^5.0.4"
-  },
-  "dependencies": {
-    "@prisma/client": "^4.14.1",
-    "@types/js-yaml": "^4.0.5",
-    "dockerode": "^3.3.5",
-    "js-yaml": "^4.1.0",
-    "zod": "^3.21.4"
-  }
+    "name": "traefik-config-api",
+    "version": "1.0.0",
+    "description": "",
+    "main": "dist/index.js",
+    "type": "module",
+    "scripts": {
+        "start": "node ./dist/src/index.js",
+        "build": "tsc --build --verbose",
+        "build2": "prisma migrate dev --name init &&  prisma generate",
+        "start:ts": "npx tsc --watch",
+        "start:watch": "nodemon dist/index.js",
+        "start:dev": "concurrently \"npm run start:ts\" \"npm run start:watch\"",
+        "prisma:db:push": "prisma db push",
+        "migarte:dev": "prisma migrate dev"
+    },
+    "keywords": [],
+    "author": "",
+    "license": "ISC",
+    "devDependencies": {
+        "@types/cors": "^2.8.13",
+        "@types/dockerode": "^3.3.18",
+        "@types/express": "^4.17.17",
+        "@types/morgan": "^1.9.4",
+        "@types/node": "^20.2.5",
+        "concurrently": "^8.0.1",
+        "nodemon": "^2.0.22",
+        "ts-node": "^10.9.1",
+        "typescript": "^5.0.4"
+    },
+    "dependencies": {
+        "@prisma/client": "^4.14.1",
+        "cors": "^2.8.5",
+        "dotenv": "^16.0.3",
+        "prisma": "^4.14.1",
+        "express": "^4.18.2",
+        "morgan": "^1.10.0",
+        "@types/js-yaml": "^4.0.5",
+        "dockerode": "^3.3.5",
+        "js-yaml": "^4.1.0",
+        "zod": "^3.21.4"
+    }
 }

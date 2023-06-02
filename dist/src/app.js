@@ -3,33 +3,26 @@ import cors from "cors";
 import Docker from "dockerode";
 import express from "express";
 import morgan from "morgan";
-import path from "path";
-import { traefik } from "./config/traefikConfigTemplate";
-
+import { traefik } from "./config/traefikConfigTemplate.js";
 export const app = express();
-
 const prisma = new PrismaClient();
-
 app.use(cors());
 app.use(express.json());
 app.use(morgan("dev"));
-app.use(express.static(path.join(__dirname, "./ui")));
-
 let congFile;
 const domain = process.env.DOMAIN;
-
 app.get("/api/:ver/servers", async (req, res) => {
     try {
         const servers = await prisma.containerserver.findMany();
         await prisma.$disconnect();
         res.status(200).json(servers);
-    } catch (err) {
+    }
+    catch (err) {
         await prisma.$disconnect();
         console.log(`Endpoint requested: ${req.originalUrl}`, err);
         res.status(500).send("Something went wrong.");
     }
 });
-
 app.post("/api/:ver/servers/", async (req, res) => {
     try {
         const { id, name, host, port, enable } = req.body;
@@ -44,7 +37,8 @@ app.post("/api/:ver/servers/", async (req, res) => {
         });
         await prisma.$disconnect();
         res.status(201).json(servers);
-    } catch (err) {
+    }
+    catch (err) {
         await prisma.$disconnect();
         console.log(`Endpoint requested: ${req.originalUrl}`, err);
         res.status(500).send("Something went wrong.");
@@ -67,13 +61,13 @@ app.put("/api/:ver/servers/:id", async (req, res) => {
         });
         await prisma.$disconnect();
         res.status(201).json(servers);
-    } catch (err) {
+    }
+    catch (err) {
         await prisma.$disconnect();
         console.log(`Endpoint requested: ${req.originalUrl}`, err);
         res.status(500).send("Something went wrong.");
     }
 });
-
 app.delete("/api/:ver/servers/:id", async (req, res) => {
     try {
         const id = req.params.id;
@@ -84,38 +78,35 @@ app.delete("/api/:ver/servers/:id", async (req, res) => {
         });
         await prisma.$disconnect();
         res.status(200).json(`Server ${deletedServer.name} has been deleted`);
-    } catch (err) {
+    }
+    catch (err) {
         await prisma.$disconnect();
         console.log(`Endpoint requested: ${req.originalUrl}`, err);
         res.status(500).send("Something went wrong.");
     }
 });
-
 app.get("/api/:ver/", (req, res) => {
     const version = req.params.ver;
     res.status(200).send(`server up and running, api version: ${version}`);
 });
-
 app.get("/api/:ver/traefikconfig", async (req, res) => {
     try {
         const servers = await prisma.containerserver.findMany();
-        const dockerServersInstances = servers.map((docker: any) => {
+        const dockerServersInstances = servers.map((docker) => {
             return new Docker({
                 host: docker.host,
                 port: docker.port,
                 headers: { name: docker.name },
             });
         });
-        const containerList = await Promise.all(
-            dockerServersInstances.map(async (dockerInstance: any) => {
-                const containers = await dockerInstance.listContainers(req.query);
-                return containers.map((container: any) => ({
-                    ...container,
-                    serverName: (dockerInstance as any).modem.headers?.name as string,
-                    serverHostname: (dockerInstance.modem as any).host as string,
-                }));
-            }),
-        );
+        const containerList = await Promise.all(dockerServersInstances.map(async (dockerInstance) => {
+            const containers = await dockerInstance.listContainers(req.query);
+            return containers.map((container) => ({
+                ...container,
+                serverName: dockerInstance.modem.headers?.name,
+                serverHostname: dockerInstance.modem.host,
+            }));
+        }));
         const mergedContainerList = [...containerList.flat()];
         congFile = { http: { routers: "authelia" } };
         const routers = mergedContainerList.map((item) => {
@@ -134,17 +125,12 @@ app.get("/api/:ver/traefikconfig", async (req, res) => {
             };
             return route;
         });
-        const traefikRoutes = routers.filter(
-            (itemTofilter) =>
-                itemTofilter.Labels["traefik.enable"] === "true" || itemTofilter.Labels["swag"] === "enable",
-        );
+        const traefikRoutes = routers.filter((itemTofilter) => itemTofilter.Labels["traefik.enable"] === "true" || itemTofilter.Labels["swag"] === "enable");
         const filteredRoutes = traefikRoutes.map((container) => {
-            const keyName =
-                container.Labels["traefik.name"] ??
-                container.Name.replace(/^\//, "").replace(/^\w/, (c: any) => c.toUpperCase());
+            const keyName = container.Labels["traefik.name"] ??
+                container.Name.replace(/^\//, "").replace(/^\w/, (c) => c.toUpperCase());
             const constainerHostname = container.Labels["traefik.hostname"] ?? keyName;
-            const containerMiddlewares: string[] =
-                container.Labels["traefik.middlewares"]?.split(",") ??
+            const containerMiddlewares = container.Labels["traefik.middlewares"]?.split(",") ??
                 (container.Labels["authelia_auth"] === "false" ? [] : ["auth"]);
             const containerEntrypoints = container.Labels["traefik.entrypoints"]?.split(",") ?? ["https"];
             return {
@@ -156,14 +142,11 @@ app.get("/api/:ver/traefikconfig", async (req, res) => {
                 },
             };
         });
-
         Object.assign(traefik.http.routers, ...filteredRoutes);
-
         const filteredServices = traefikRoutes.map((container) => {
-            const keyName = container.Name.replace(/^\//, "").replace(/^\w/, (c: any) => c.toUpperCase());
-            const containerWebuiPort =
-                container.Labels["traefik.webuiport"]?.split(",") ??
-                container.Ports[container.Ports.findIndex((obj: any) => obj.IP === "0.0.0.0")]?.PublicPort;
+            const keyName = container.Name.replace(/^\//, "").replace(/^\w/, (c) => c.toUpperCase());
+            const containerWebuiPort = container.Labels["traefik.webuiport"]?.split(",") ??
+                container.Ports[container.Ports.findIndex((obj) => obj.IP === "0.0.0.0")]?.PublicPort;
             return {
                 [keyName]: {
                     loadBalancer: {
@@ -176,13 +159,14 @@ app.get("/api/:ver/traefikconfig", async (req, res) => {
                 },
             };
         });
-
         Object.assign(traefik.http.services, ...filteredServices);
         await prisma.$disconnect();
         res.status(200).send(JSON.stringify(traefik));
-    } catch (err) {
+    }
+    catch (err) {
         await prisma.$disconnect();
         console.log(`Endpoint requested: ${req.originalUrl}`, err);
         res.status(500).send("Something went wrong.");
     }
 });
+//# sourceMappingURL=app.js.map
