@@ -1,9 +1,9 @@
 import { PrismaClient } from "@prisma/client";
 import cors from "cors";
 import Docker from "dockerode";
-import express from "express";
+import express, { Request, Response } from "express";
 import morgan from "morgan";
-import { traefik } from "./config/traefikConfigTemplate.js";
+import { traefik } from "./config/traefikConfigTemplate";
 
 export const app = express();
 
@@ -16,7 +16,7 @@ app.use(morgan("dev"));
 let congFile;
 const domain = process.env.DOMAIN;
 
-app.get("/api/:ver/servers", async (req, res) => {
+app.get("/api/:ver/servers", async (req: Request, res: Response) => {
     try {
         const servers = await prisma.containerserver.findMany();
         await prisma.$disconnect();
@@ -28,7 +28,7 @@ app.get("/api/:ver/servers", async (req, res) => {
     }
 });
 
-app.post("/api/:ver/servers/", async (req, res) => {
+app.post("/api/:ver/servers/", async (req: Request, res: Response) => {
     try {
         const { id, name, host, port, enable } = req.body;
         const servers = await prisma.containerserver.create({
@@ -48,7 +48,7 @@ app.post("/api/:ver/servers/", async (req, res) => {
         res.status(500).send("Something went wrong.");
     }
 });
-app.put("/api/:ver/servers/:id", async (req, res) => {
+app.put("/api/:ver/servers/:id", async (req: Request, res: Response) => {
     try {
         const id = req.params.id;
         const { name, host, port, enable } = req.body;
@@ -72,7 +72,7 @@ app.put("/api/:ver/servers/:id", async (req, res) => {
     }
 });
 
-app.delete("/api/:ver/servers/:id", async (req, res) => {
+app.delete("/api/:ver/servers/:id", async (req: Request, res: Response) => {
     try {
         const id = req.params.id;
         const deletedServer = await prisma.containerserver.delete({
@@ -89,12 +89,12 @@ app.delete("/api/:ver/servers/:id", async (req, res) => {
     }
 });
 
-app.get("/api/:ver/", (req, res) => {
+app.get("/api/:ver/", (req: Request, res: Response) => {
     const version = req.params.ver;
     res.status(200).send(`server up and running, api version: ${version}`);
 });
 
-app.get("/api/:ver/traefikconfig", async (req, res) => {
+app.get("/api/:ver/traefikconfig", async (req: Request, res: Response) => {
     try {
         const servers = await prisma.containerserver.findMany();
         const dockerServersInstances = servers.map((docker: any) => {

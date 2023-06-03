@@ -3,13 +3,12 @@
     "version": "1.0.0",
     "description": "",
     "main": "dist/index.js",
-    "type": "module",
     "scripts": {
-        "start": "node ./dist/src/index.js",
-        "build": "tsc --build --verbose",
+        "start": "npm run build && node dist/index.js",
+        "dev": "ts-node-dev --transpile-only src/index.ts",
+        "build": "tsc",
         "build2": "prisma migrate dev --name init &&  prisma generate",
         "start:ts": "npx tsc --watch",
-        "start:watch": "nodemon dist/index.js",
         "start:dev": "concurrently \"npm run start:ts\" \"npm run start:watch\"",
         "prisma:db:push": "prisma db push",
         "migarte:dev": "prisma migrate dev"
@@ -26,18 +25,19 @@
         "concurrently": "^8.0.1",
         "nodemon": "^2.0.22",
         "ts-node": "^10.9.1",
+        "ts-node-dev": "^2.0.0",
+        "@types/js-yaml": "^4.0.5",
         "typescript": "^5.0.4"
     },
     "dependencies": {
         "@prisma/client": "^4.14.1",
         "cors": "^2.8.5",
-        "dotenv": "^16.0.3",
-        "prisma": "^4.14.1",
-        "express": "^4.18.2",
-        "morgan": "^1.10.0",
-        "@types/js-yaml": "^4.0.5",
         "dockerode": "^3.3.5",
+        "dotenv": "^16.0.3",
+        "express": "^4.18.2",
         "js-yaml": "^4.1.0",
+        "morgan": "^1.10.0",
+        "prisma": "^4.14.1",
         "zod": "^3.21.4"
     }
 }
