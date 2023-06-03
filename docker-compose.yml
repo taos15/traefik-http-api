@@ -1,13 +1,12 @@
-version: '3'
+version: "3"
 services:
-  app:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    ports:
-      - 4000:4000
-    volumes:
-      - ./dist:/app/dist
-
-  
-
+    api:
+        build:
+            context: .
+            target: production
+        environment:
+            - DATABASE_URL=file:./db/dev.db
+            - DOMAIN=yourdomain.tld
+            - AUTHELIAADDRESS=http://192.168.1.1:9091
+        ports:
+            - 4000:4000

@@ -1,0 +1,16 @@
+version: "3"
+services:
+    api:
+        build:
+            context: .
+            target: build
+        volumes:
+            - ./:/usr/src/app
+            - /usr/src/app/node_modules
+        environment:
+          - DATABASE_URL=file:./db/dev.db
+          - DOMAIN=yourdomain.tld
+          - AUTHELIAADDRESS=http://192.168.1.1:9091
+        ports:
+            - 4000:4000
+        command: npm run start:dev

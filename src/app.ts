@@ -184,3 +184,13 @@ app.get("/api/:ver/traefikconfig", async (req: Request, res: Response) => {
         res.status(500).send("Something went wrong.");
     }
 });
+
+app.get("*", async (req: Request, res: Response) => {
+    try {
+        res.status(200).json("Server RUNNING");
+    } catch (err) {
+        await prisma.$disconnect();
+        console.log(`Endpoint requested: ${req.originalUrl}`, err);
+        res.status(500).send("Something went wrong.");
+    }
+});
