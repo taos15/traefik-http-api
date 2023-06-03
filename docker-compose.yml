@@ -1,0 +1,12 @@
+version: "3"
+services:
+    api:
+        build:
+            context: .
+            target: production
+        environment:
+            - DATABASE_URL=file:./db/dev.db
+            - DOMAIN=yourdomain.tld
+            - AUTHELIAADDRESS=http://192.168.1.1:9091
+        ports:
+            - 4000:4000

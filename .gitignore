@@ -10,11 +10,9 @@
 node_modules
 
 # pnpm package manager
-pnpm-lock.yaml
 
 # npm package manager
-package-lock.json
-
+dist
 # Logs
 logs
 *.log
@@ -34,7 +32,6 @@ coverage
 *.lcov
 
 # Compiled output
-/dist/
 
 dist-ssr
 *.local
@@ -69,7 +66,8 @@ dist-ssr
 
 # databases
 **/*.db*
-**/prisma/migrations/*
+**/prisma/db
+**/prisma/migrations
 
 # local files
 **/traefikConfigTemplate.?s

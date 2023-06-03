@@ -1,26 +1,43 @@
-# Use Node.js 20 as the base image
-FROM node:20
+# Build Stage 
+FROM node:20 AS build
 
-# Set the working directory inside the container
-WORKDIR /app
+WORKDIR /usr/src/app
 
-# Copy package.json, package-lock.json, and pnpm-lock.yaml to the working directory
-COPY package*.json pnpm-lock.yaml ./
+COPY package*.json .
 
-# Install pnpm globally
-RUN npm install -g pnpm
+RUN npm install
 
-# Install dependencies using pnpm
-RUN pnpm install --frozen-lockfile
-
-# Copy the rest of the application code to the working directory
 COPY . .
 
-# Build the TypeScript project
-RUN pnpm run build
+ARG DATABASE_URL=file:./db/dev.db
+ARG DOMAIN=yourdomain.tld
 
-# Expose the port your Express app is listening on (replace 3000 with your app's port if needed)
-EXPOSE 4000
+ENV DATABASE_URL=${DATABASE_URL}
+ENV DOMAIN=${DOMAIN}
 
-# Start the Express app
-CMD ["pnpm", "start"]
+RUN npm run prisma:init && npm run build
+
+# Production Stage 
+FROM node:20 AS production 
+
+ARG NODE_ENV=production
+ARG DATABASE_URL=file:./db/dev.db
+ARG DOMAIN=yourdomain.tld
+ARG AUTHELIAADDRESS=http://192.168.1.1:9091
+
+ENV NODE_ENV=${NODE_ENV}
+ENV DATABASE_URL=${DATABASE_URL}
+ENV DOMAIN=${DOMAIN}
+ENV AUTHELIAADDRESS=${AUTHELIAADDRESS}
+
+WORKDIR /usr/src/app
+
+COPY package*.json .
+COPY --from=build /usr/src/app/prisma/schema.prisma ./schema.prisma
+
+RUN npm ci --omit=dev && \
+npm run prisma:init
+
+COPY --from=build /usr/src/app/dist ./dist
+
+CMD [ "node", "dist/index.js" ]

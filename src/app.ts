@@ -1,9 +1,8 @@
 import { PrismaClient } from "@prisma/client";
 import cors from "cors";
 import Docker from "dockerode";
-import express from "express";
+import express, { Request, Response } from "express";
 import morgan from "morgan";
-import path from "path";
 import { traefik } from "./config/traefikConfigTemplate";
 
 export const app = express();
@@ -13,12 +12,11 @@ const prisma = new PrismaClient();
 app.use(cors());
 app.use(express.json());
 app.use(morgan("dev"));
-app.use(express.static(path.join(__dirname, "./ui")));
 
 let congFile;
 const domain = process.env.DOMAIN;
 
-app.get("/api/:ver/servers", async (req, res) => {
+app.get("/api/:ver/servers", async (req: Request, res: Response) => {
     try {
         const servers = await prisma.containerserver.findMany();
         await prisma.$disconnect();
@@ -30,7 +28,7 @@ app.get("/api/:ver/servers", async (req, res) => {
     }
 });
 
-app.post("/api/:ver/servers/", async (req, res) => {
+app.post("/api/:ver/servers/", async (req: Request, res: Response) => {
     try {
         const { id, name, host, port, enable } = req.body;
         const servers = await prisma.containerserver.create({
@@ -50,7 +48,7 @@ app.post("/api/:ver/servers/", async (req, res) => {
         res.status(500).send("Something went wrong.");
     }
 });
-app.put("/api/:ver/servers/:id", async (req, res) => {
+app.put("/api/:ver/servers/:id", async (req: Request, res: Response) => {
     try {
         const id = req.params.id;
         const { name, host, port, enable } = req.body;
@@ -74,7 +72,7 @@ app.put("/api/:ver/servers/:id", async (req, res) => {
     }
 });
 
-app.delete("/api/:ver/servers/:id", async (req, res) => {
+app.delete("/api/:ver/servers/:id", async (req: Request, res: Response) => {
     try {
         const id = req.params.id;
         const deletedServer = await prisma.containerserver.delete({
@@ -91,15 +89,15 @@ app.delete("/api/:ver/servers/:id", async (req, res) => {
     }
 });
 
-app.get("/api/:ver/", (req, res) => {
+app.get("/api/:ver/", (req: Request, res: Response) => {
     const version = req.params.ver;
     res.status(200).send(`server up and running, api version: ${version}`);
 });
 
-app.get("/api/:ver/traefikconfig", async (req, res) => {
+app.get("/api/:ver/traefikconfig", async (req: Request, res: Response) => {
     try {
         const servers = await prisma.containerserver.findMany();
-        const dockerServersInstances = servers.map((docker) => {
+        const dockerServersInstances = servers.map((docker: any) => {
             return new Docker({
                 host: docker.host,
                 port: docker.port,
@@ -107,9 +105,9 @@ app.get("/api/:ver/traefikconfig", async (req, res) => {
             });
         });
         const containerList = await Promise.all(
-            dockerServersInstances.map(async (dockerInstance) => {
+            dockerServersInstances.map(async (dockerInstance: any) => {
                 const containers = await dockerInstance.listContainers(req.query);
-                return containers.map((container) => ({
+                return containers.map((container: any) => ({
                     ...container,
                     serverName: (dockerInstance as any).modem.headers?.name as string,
                     serverHostname: (dockerInstance.modem as any).host as string,
@@ -141,7 +139,7 @@ app.get("/api/:ver/traefikconfig", async (req, res) => {
         const filteredRoutes = traefikRoutes.map((container) => {
             const keyName =
                 container.Labels["traefik.name"] ??
-                container.Name.replace(/^\//, "").replace(/^\w/, (c) => c.toUpperCase());
+                container.Name.replace(/^\//, "").replace(/^\w/, (c: any) => c.toUpperCase());
             const constainerHostname = container.Labels["traefik.hostname"] ?? keyName;
             const containerMiddlewares: string[] =
                 container.Labels["traefik.middlewares"]?.split(",") ??
@@ -160,10 +158,10 @@ app.get("/api/:ver/traefikconfig", async (req, res) => {
         Object.assign(traefik.http.routers, ...filteredRoutes);
 
         const filteredServices = traefikRoutes.map((container) => {
-            const keyName = container.Name.replace(/^\//, "").replace(/^\w/, (c) => c.toUpperCase());
+            const keyName = container.Name.replace(/^\//, "").replace(/^\w/, (c: any) => c.toUpperCase());
             const containerWebuiPort =
                 container.Labels["traefik.webuiport"]?.split(",") ??
-                container.Ports[container.Ports.findIndex((obj) => obj.IP === "0.0.0.0")]?.PublicPort;
+                container.Ports[container.Ports.findIndex((obj: any) => obj.IP === "0.0.0.0")]?.PublicPort;
             return {
                 [keyName]: {
                     loadBalancer: {
@@ -180,6 +178,16 @@ app.get("/api/:ver/traefikconfig", async (req, res) => {
         Object.assign(traefik.http.services, ...filteredServices);
         await prisma.$disconnect();
         res.status(200).send(JSON.stringify(traefik));
+    } catch (err) {
+        await prisma.$disconnect();
+        console.log(`Endpoint requested: ${req.originalUrl}`, err);
+        res.status(500).send("Something went wrong.");
+    }
+});
+
+app.get("*", async (req: Request, res: Response) => {
+    try {
+        res.status(200).json("Server RUNNING");
     } catch (err) {
         await prisma.$disconnect();
         console.log(`Endpoint requested: ${req.originalUrl}`, err);
