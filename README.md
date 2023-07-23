@@ -38,7 +38,7 @@ you need to add a `http` provider to your traefik static config. It looks like t
 ```yaml
     # http API provider
     http:
-        endpoint: "http://192.168.1.1:4000/api/1/traefikconfig" # Uncomment if you are using docker socket proxy
+        endpoint: "http://localhost:4000/api/1/traefikconfig" 
 ```
 Change the IP address to the IP of the server running the api server.
 
@@ -53,7 +53,7 @@ labels:
     - traefik.name=soemthing # router and services name
     - traefik.hostname=someApplicationName # oeverwrite the hostname like overwritten.domain.tld
     - traefik.middlewares=something,something,something@file,somthingelse@http # comma separated middlewares, the server convert it to an array, default to auth
-    - authelia_auth=false # by defaul the server add authelia to as middleware (auth), if you set the middleware label this get overwritten, this label only works when no middlewares will defined in the traefik.middlewares label
+    - authelia_auth=false # by defaul the server add authelia as middleware (auth), if you set the middleware label this get overwritten, this label only works when no middlewares are defined in the traefik.middlewares label
     - traefik.entrypoints=someEntrypoints,anotheEntrypoints # comma separated entrypoints, the server convert it to an array, defualt to https
 ```
 ## Environment variables
@@ -67,4 +67,4 @@ environment:
 ```
 
 ## Notes
-The server that you the api to get the runnig containers running needs to have a dockersocket proxy running. 
+The server that the http api provider gets the running containers from needs to have a dockersocket proxy running. 
