@@ -16,6 +16,24 @@ app.use(morgan("dev"));
 let congFile;
 const domain = process.env.DOMAIN;
 
+export interface Icontainerserver {
+    id: string;
+    name: string;
+    host: string;
+    port: number;
+    enable: boolean;
+}
+
+export const createDockerServcersInstances = (servers: Icontainerserver[]): Docker[] => {
+    const dockerServersInstances = servers.map((docker) => {
+        return new Docker({
+            host: docker.host,
+            port: docker.port,
+            headers: { name: docker.name },
+        });
+    });
+    return dockerServersInstances;
+};
 app.get("/api/:ver/servers", async (req: Request, res: Response) => {
     try {
         const servers = await prisma.containerserver.findMany();
@@ -97,17 +115,11 @@ app.get("/api/:ver/", (req: Request, res: Response) => {
 app.get("/api/:ver/traefikconfig", async (req: Request, res: Response) => {
     try {
         const servers = await prisma.containerserver.findMany();
-        const dockerServersInstances = servers.map((docker: any) => {
-            return new Docker({
-                host: docker.host,
-                port: docker.port,
-                headers: { name: docker.name },
-            });
-        });
+        const dockerServersInstances = createDockerServcersInstances(servers);
         const containerList = await Promise.all(
-            dockerServersInstances.map(async (dockerInstance: any) => {
+            dockerServersInstances.map(async (dockerInstance) => {
                 const containers = await dockerInstance.listContainers(req.query);
-                return containers.map((container: any) => ({
+                return containers.map((container) => ({
                     ...container,
                     serverName: (dockerInstance as any).modem.headers?.name as string,
                     serverHostname: (dockerInstance.modem as any).host as string,
@@ -116,7 +128,7 @@ app.get("/api/:ver/traefikconfig", async (req: Request, res: Response) => {
         );
         const mergedContainerList = [...containerList.flat()];
         congFile = { http: { routers: "authelia" } };
-        const routers = mergedContainerList.map((item) => {
+        const containers = mergedContainerList.map((item) => {
             const route = {
                 Id: item.Id,
                 Name: item.Names[0],
@@ -132,11 +144,11 @@ app.get("/api/:ver/traefikconfig", async (req: Request, res: Response) => {
             };
             return route;
         });
-        const traefikRoutes = routers.filter(
+        const traefikContainers = containers.filter(
             (itemTofilter) =>
                 itemTofilter.Labels["traefik.enable"] === "true" || itemTofilter.Labels["swag"] === "enable",
         );
-        const filteredRoutes = traefikRoutes.map((container) => {
+        const filteredRoutes = traefikContainers.map((container) => {
             const keyName =
                 container.Labels["traefik.name"] ??
                 container.Name.replace(/^\//, "").replace(/^\w/, (c: any) => c.toUpperCase());
@@ -157,7 +169,7 @@ app.get("/api/:ver/traefikconfig", async (req: Request, res: Response) => {
 
         Object.assign(traefik.http.routers, ...filteredRoutes);
 
-        const filteredServices = traefikRoutes.map((container) => {
+        const filteredServices = traefikContainers.map((container) => {
             const keyName = container.Name.replace(/^\//, "").replace(/^\w/, (c: any) => c.toUpperCase());
             const containerWebuiPort =
                 container.Labels["traefik.webuiport"]?.split(",") ??
