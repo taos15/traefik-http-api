@@ -1,4 +1,5 @@
-import { createDockerServcersInstances, prisma } from "./app";
+import { prisma } from "./app";
+import { createDockerServcersInstances } from "./createDockerServcersInstances";
 
 export async function gertContainersList() {
     const servers = await prisma.containerserver.findMany();

@@ -1,6 +1,5 @@
 import { PrismaClient } from "@prisma/client";
 import cors from "cors";
-import Docker from "dockerode";
 import express, { Request, Response } from "express";
 import morgan from "morgan";
 import { addRoutesToTraefik } from "./addRoutesToTraefik";
@@ -31,16 +30,6 @@ export interface Icontainerserver {
     enable: boolean;
 }
 
-export const createDockerServcersInstances = (servers: Icontainerserver[]): Docker[] => {
-    const dockerServersInstances = servers.map((docker) => {
-        return new Docker({
-            host: docker.host,
-            port: docker.port,
-            headers: { name: docker.name },
-        });
-    });
-    return dockerServersInstances;
-};
 app.get("/api/:ver/servers", async (req: Request, res: Response) => {
     try {
         const servers = await prisma.containerserver.findMany();
