@@ -7,7 +7,7 @@
         "dev": "ts-node-dev --poll src/index.ts",
         "build": "rimraf ./dist && tsc",
         "start": "npm run build && node dist/index.js",
-        "start:watch": "nodemon dist/index.js",
+        "start:watch": "lsof -ti :4000 | xargs kill -9 && nodemon dist/index.js",
         "prisma:init": "prisma migrate dev --name init &&  prisma generate",
         "start:ts": "rimraf ./dist && tsc --watch",
         "start:dev": "concurrently \"npm run start:ts\" \"npm run start:watch\"",

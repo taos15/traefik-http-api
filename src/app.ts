@@ -4,17 +4,23 @@ import Docker from "dockerode";
 import express, { Request, Response } from "express";
 import morgan from "morgan";
 import { traefik } from "./config/traefikConfigTemplate";
+import { gertContainersList } from "./gertContainersList";
+import { getAllContainers } from "./getAllContainers";
+import { getCombinedContainerlist } from "./getCombinedContainerlist";
+import { getFilteredRoutes } from "./getFilteredRoutes";
+import { getFilteredServices } from "./getFilteredServices";
+import { getTraefikContainers } from "./getTraefikContainers";
 
 export const app = express();
 
-const prisma = new PrismaClient();
+export const prisma = new PrismaClient();
 
 app.use(cors());
 app.use(express.json());
 app.use(morgan("dev"));
 
 let congFile;
-const domain = process.env.DOMAIN;
+export const domain = process.env.DOMAIN;
 
 export interface Icontainerserver {
     id: string;
@@ -111,83 +117,21 @@ app.get("/api/:ver/", (req: Request, res: Response) => {
     const version = req.params.ver;
     res.status(200).send(`server up and running, api version: ${version}`);
 });
+app.get("/api/:ver/test", async (req: Request, res: Response) => {
+    const mergedContainerList = await getTraefikContainers();
+    res.status(200).send(mergedContainerList);
+});
 
 app.get("/api/:ver/traefikconfig", async (req: Request, res: Response) => {
     try {
-        const servers = await prisma.containerserver.findMany();
-        const dockerServersInstances = createDockerServcersInstances(servers);
-        const containerList = await Promise.all(
-            dockerServersInstances.map(async (dockerInstance) => {
-                const containers = await dockerInstance.listContainers(req.query);
-                return containers.map((container) => ({
-                    ...container,
-                    serverName: (dockerInstance as any).modem.headers?.name as string,
-                    serverHostname: (dockerInstance.modem as any).host as string,
-                }));
-            }),
-        );
-        const mergedContainerList = [...containerList.flat()];
         congFile = { http: { routers: "authelia" } };
-        const containers = mergedContainerList.map((item) => {
-            const route = {
-                Id: item.Id,
-                Name: item.Names[0],
-                Image: item.Image,
-                Ports: item.Ports,
-                Labels: item.Labels,
-                State: item.State,
-                HostConfig: item.HostConfig,
-                NetworkSettings: item.NetworkSettings,
-                Mounts: item.Mounts,
-                serverName: item.serverName,
-                serverHostname: item.serverHostname,
-            };
-            return route;
-        });
-        const traefikContainers = containers.filter(
-            (itemTofilter) =>
-                itemTofilter.Labels["traefik.enable"] === "true" || itemTofilter.Labels["swag"] === "enable",
-        );
-        const filteredRoutes = traefikContainers.map((container) => {
-            const keyName =
-                container.Labels["traefik.name"] ??
-                container.Name.replace(/^\//, "").replace(/^\w/, (c: any) => c.toUpperCase());
-            const constainerHostname = container.Labels["traefik.hostname"] ?? keyName;
-            const containerMiddlewares: string[] =
-                container.Labels["traefik.middlewares"]?.split(",") ??
-                (container.Labels["authelia_auth"] === "false" ? [] : ["auth"]);
-            const containerEntrypoints = container.Labels["traefik.entrypoints"]?.split(",") ?? ["https"];
-            return {
-                [keyName]: {
-                    entryPoints: containerEntrypoints,
-                    rule: `Host(` + `\`` + constainerHostname + `.${domain}\`)`,
-                    service: keyName,
-                    middlewares: containerMiddlewares,
-                },
-            };
-        });
+        const filteredRoutes = await getFilteredRoutes();
 
-        Object.assign(traefik.http.routers, ...filteredRoutes);
+        addRoutesToTraefik(filteredRoutes);
 
-        const filteredServices = traefikContainers.map((container) => {
-            const keyName = container.Name.replace(/^\//, "").replace(/^\w/, (c: any) => c.toUpperCase());
-            const containerWebuiPort =
-                container.Labels["traefik.webuiport"]?.split(",") ??
-                container.Ports[container.Ports.findIndex((obj: any) => obj.IP === "0.0.0.0")]?.PublicPort;
-            return {
-                [keyName]: {
-                    loadBalancer: {
-                        servers: [
-                            {
-                                url: `${container.serverHostname}:${containerWebuiPort}`,
-                            },
-                        ],
-                    },
-                },
-            };
-        });
+        const filteredServices = await getFilteredServices();
 
-        Object.assign(traefik.http.services, ...filteredServices);
+        addServicesToTraefik(filteredServices);
         await prisma.$disconnect();
         res.status(200).send(JSON.stringify(traefik));
     } catch (err) {
@@ -206,3 +150,12 @@ app.get("*", async (req: Request, res: Response) => {
         res.status(500).send("Something went wrong.");
     }
 });
+function addServicesToTraefik(filteredServices: { [x: string]: { loadBalancer: { servers: { url: string }[] } } }[]) {
+    Object.assign(traefik.http.services, ...filteredServices);
+}
+
+function addRoutesToTraefik(
+    filteredRoutes: { [x: string]: { entryPoints: string[]; rule: string; service: string; middlewares: string[] } }[],
+) {
+    Object.assign(traefik.http.routers, ...filteredRoutes);
+}
