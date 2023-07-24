@@ -3,6 +3,8 @@ import cors from "cors";
 import Docker from "dockerode";
 import express, { Request, Response } from "express";
 import morgan from "morgan";
+import { addRoutesToTraefik } from "./addRoutesToTraefik";
+import { addServicesToTraefik } from "./addServicesToTraefik";
 import { traefik } from "./config/traefikConfigTemplate";
 import { gertContainersList } from "./gertContainersList";
 import { getAllContainers } from "./getAllContainers";
@@ -19,7 +21,6 @@ app.use(cors());
 app.use(express.json());
 app.use(morgan("dev"));
 
-let congFile;
 export const domain = process.env.DOMAIN;
 
 export interface Icontainerserver {
@@ -124,14 +125,9 @@ app.get("/api/:ver/test", async (req: Request, res: Response) => {
 
 app.get("/api/:ver/traefikconfig", async (req: Request, res: Response) => {
     try {
-        congFile = { http: { routers: "authelia" } };
-        const filteredRoutes = await getFilteredRoutes();
+        addRoutesToTraefik();
+        addServicesToTraefik();
 
-        addRoutesToTraefik(filteredRoutes);
-
-        const filteredServices = await getFilteredServices();
-
-        addServicesToTraefik(filteredServices);
         await prisma.$disconnect();
         res.status(200).send(JSON.stringify(traefik));
     } catch (err) {
@@ -150,12 +146,3 @@ app.get("*", async (req: Request, res: Response) => {
         res.status(500).send("Something went wrong.");
     }
 });
-function addServicesToTraefik(filteredServices: { [x: string]: { loadBalancer: { servers: { url: string }[] } } }[]) {
-    Object.assign(traefik.http.services, ...filteredServices);
-}
-
-function addRoutesToTraefik(
-    filteredRoutes: { [x: string]: { entryPoints: string[]; rule: string; service: string; middlewares: string[] } }[],
-) {
-    Object.assign(traefik.http.routers, ...filteredRoutes);
-}
