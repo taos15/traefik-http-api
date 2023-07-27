@@ -6,7 +6,7 @@ export async function gertContainersList() {
     const dockerServersInstances = createDockerServcersInstances(servers);
     const containerList = await Promise.all(
         dockerServersInstances.map(async (dockerInstance) => {
-            const containers = await dockerInstance.listContainers();
+            const containers = await dockerInstance.listContainers({ all: true });
             return containers.map((container) => ({
                 ...container,
                 serverName: (dockerInstance as any).modem.headers?.name as string,

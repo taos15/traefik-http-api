@@ -29,109 +29,123 @@ export interface Icontainerserver {
     port: number;
     enable: boolean;
 }
-
-app.get("/api/:ver/servers", async (req: Request, res: Response) => {
-    try {
-        const servers = await prisma.containerserver.findMany();
-        await prisma.$disconnect();
-        res.status(200).json(servers);
-    } catch (err) {
-        await prisma.$disconnect();
-        console.log(`Endpoint requested: ${req.originalUrl}`, err);
-        res.status(500).send("Something went wrong.");
-    }
+app.get("/api/:ver/test", (req: Request, res: Response) => {
+    (async () => {
+        const mergedContainerList = await getTraefikContainers();
+        res.status(200).send(mergedContainerList);
+    })();
 });
 
-app.post("/api/:ver/servers/", async (req: Request, res: Response) => {
-    try {
-        const { id, name, host, port, enable } = req.body;
-        const servers = await prisma.containerserver.create({
-            data: {
-                id,
-                name,
-                host,
-                port,
-                enable,
-            },
-        });
-        await prisma.$disconnect();
-        res.status(201).json(servers);
-    } catch (err) {
-        await prisma.$disconnect();
-        console.log(`Endpoint requested: ${req.originalUrl}`, err);
-        res.status(500).send("Something went wrong.");
-    }
-});
-app.put("/api/:ver/servers/:id", async (req: Request, res: Response) => {
-    try {
-        const id = req.params.id;
-        const { name, host, port, enable } = req.body;
-        const servers = await prisma.containerserver.update({
-            where: {
-                id,
-            },
-            data: {
-                name,
-                host,
-                port,
-                enable,
-            },
-        });
-        await prisma.$disconnect();
-        res.status(201).json(servers);
-    } catch (err) {
-        await prisma.$disconnect();
-        console.log(`Endpoint requested: ${req.originalUrl}`, err);
-        res.status(500).send("Something went wrong.");
-    }
+app.get("/api/:ver/servers", (req: Request, res: Response) => {
+    (async () => {
+        try {
+            const servers = await prisma.containerserver.findMany();
+            await prisma.$disconnect();
+            res.status(200).json(servers);
+        } catch (err) {
+            await prisma.$disconnect();
+            console.log(`Endpoint requested: ${req.originalUrl}`, err);
+            res.status(500).send("Something went wrong.");
+        }
+    })();
 });
 
-app.delete("/api/:ver/servers/:id", async (req: Request, res: Response) => {
-    try {
-        const id = req.params.id;
-        const deletedServer = await prisma.containerserver.delete({
-            where: {
-                id,
-            },
-        });
-        await prisma.$disconnect();
-        res.status(200).json(`Server ${deletedServer.name} has been deleted`);
-    } catch (err) {
-        await prisma.$disconnect();
-        console.log(`Endpoint requested: ${req.originalUrl}`, err);
-        res.status(500).send("Something went wrong.");
-    }
+app.post("/api/:ver/servers/", (req: Request, res: Response) => {
+    (async () => {
+        try {
+            const { id, name, host, port, enable } = req.body;
+            const servers = await prisma.containerserver.create({
+                data: {
+                    id,
+                    name,
+                    host,
+                    port,
+                    enable,
+                },
+            });
+            await prisma.$disconnect();
+            res.status(201).json(servers);
+        } catch (err) {
+            await prisma.$disconnect();
+            console.log(`Endpoint requested: ${req.originalUrl}`, err);
+            res.status(500).send("Something went wrong.");
+        }
+    })();
+});
+app.put("/api/:ver/servers/:id", (req: Request, res: Response) => {
+    (async () => {
+        try {
+            const id = req.params.id;
+            const { name, host, port, enable } = req.body;
+            const servers = await prisma.containerserver.update({
+                where: {
+                    id,
+                },
+                data: {
+                    name,
+                    host,
+                    port,
+                    enable,
+                },
+            });
+            await prisma.$disconnect();
+            res.status(201).json(servers);
+        } catch (err) {
+            await prisma.$disconnect();
+            console.log(`Endpoint requested: ${req.originalUrl}`, err);
+            res.status(500).send("Something went wrong.");
+        }
+    })();
+});
+
+app.delete("/api/:ver/servers/:id", (req: Request, res: Response) => {
+    (async () => {
+        try {
+            const id = req.params.id;
+            const deletedServer = await prisma.containerserver.delete({
+                where: {
+                    id,
+                },
+            });
+            await prisma.$disconnect();
+            res.status(200).json(`Server ${deletedServer.name} has been deleted`);
+        } catch (err) {
+            await prisma.$disconnect();
+            console.log(`Endpoint requested: ${req.originalUrl}`, err);
+            res.status(500).send("Something went wrong.");
+        }
+    })();
 });
 
 app.get("/api/:ver/", (req: Request, res: Response) => {
     const version = req.params.ver;
     res.status(200).send(`server up and running, api version: ${version}`);
 });
-app.get("/api/:ver/test", async (req: Request, res: Response) => {
-    const mergedContainerList = await getTraefikContainers();
-    res.status(200).send(mergedContainerList);
+
+app.get("/api/:ver/traefikconfig", (req: Request, res: Response) => {
+    (async () => {
+        try {
+            addRoutesToTraefik();
+            addServicesToTraefik();
+
+            await prisma.$disconnect();
+            res.status(200).send(JSON.stringify(traefik));
+        } catch (err) {
+            await prisma.$disconnect();
+            console.log(`Endpoint requested: ${req.originalUrl}`, err);
+            res.status(500).send("Something went wrong.");
+        }
+    })();
 });
 
-app.get("/api/:ver/traefikconfig", async (req: Request, res: Response) => {
-    try {
-        addRoutesToTraefik();
-        addServicesToTraefik();
-
-        await prisma.$disconnect();
-        res.status(200).send(JSON.stringify(traefik));
-    } catch (err) {
-        await prisma.$disconnect();
-        console.log(`Endpoint requested: ${req.originalUrl}`, err);
-        res.status(500).send("Something went wrong.");
-    }
-});
-
-app.get("*", async (req: Request, res: Response) => {
-    try {
-        res.status(200).json("Server RUNNING");
-    } catch (err) {
-        await prisma.$disconnect();
-        console.log(`Endpoint requested: ${req.originalUrl}`, err);
-        res.status(500).send("Something went wrong.");
-    }
+app.get("*", (req: Request, res: Response) => {
+    (async () => {
+        try {
+            res.status(200).json("Server RUNNING");
+        } catch (err) {
+            await prisma.$disconnect();
+            console.log(`Endpoint requested: ${req.originalUrl}`, err);
+            res.status(500).send("Something went wrong.");
+        }
+    })();
 });
