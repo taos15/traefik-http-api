@@ -6,12 +6,13 @@
     "scripts": {
         "dev": "ts-node-dev --poll src/index.ts",
         "build": "rimraf ./dist && tsc",
-        "start": "npm run build && node dist/index.js",
+        "start": "pnpm run build && console-ninja node dist/index.js",
         "start:watch": "nodemon dist/index.js",
         "start:watch-kill": "lsof -ti :4000 | xargs kill -9 && nodemon dist/index.js",
         "prisma:init": "prisma migrate dev --name init &&  prisma generate",
         "start:ts": "rimraf ./dist && tsc --watch",
-        "start:dev": "concurrently \"npm run start:ts\" \"npm run start:watch\"",
+        "start:dev": "concurrently \"pnpm run start:ts\" \"console-ninja pnpm run start:watch\"",
+        "start:ninja": " console-ninja pnpm run start:dev",
         "prisma:generate": "prisma generate",
         "prisma:db:deploy": "prisma db push",
         "prisma:mirgate": "prisma migrate deploy"
