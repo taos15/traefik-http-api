@@ -1,7 +1,13 @@
 import { gertContainersList } from "./gertContainersList";
 
 export async function getCombinedContainerlist() {
-    const containerList = await gertContainersList();
-    const mergedContainerList = [...containerList.flat()];
-    return mergedContainerList;
+    try {
+        const containerList = await gertContainersList();
+        if (containerList) {
+            const mergedContainerList = [...containerList.flat()];
+            return mergedContainerList;
+        }
+    } catch (error) {
+        console.error(error);
+    }
 }

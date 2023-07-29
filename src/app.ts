@@ -5,12 +5,8 @@ import morgan from "morgan";
 import { addRoutesToTraefik } from "./addRoutesToTraefik";
 import { addServicesToTraefik } from "./addServicesToTraefik";
 import { traefik } from "./config/traefikConfigTemplate";
-import { gertContainersList } from "./gertContainersList";
-import { getAllContainers } from "./getAllContainers";
-import { getCombinedContainerlist } from "./getCombinedContainerlist";
-import { getFilteredRoutes } from "./getFilteredRoutes";
-import { getFilteredServices } from "./getFilteredServices";
 import { getTraefikContainers } from "./getTraefikContainers";
+import { authRouter } from "./routes/authRoute";
 
 export const app = express();
 
@@ -19,6 +15,7 @@ export const prisma = new PrismaClient();
 app.use(cors());
 app.use(express.json());
 app.use(morgan("dev"));
+app.use(authRouter);
 
 export const domain = process.env.DOMAIN;
 
