@@ -1,6 +1,6 @@
 {
     "name": "traefik-config-api",
-    "version": "0.0.0",
+    "version": "0.0.1",
     "description": "An api config provider for Traefik",
     "main": "dist/index.js",
     "scripts": {
@@ -17,7 +17,7 @@
         "prisma:seed": "ts-node-dev src/db/seed.ts",
         "prisma:generate": "prisma generate",
         "prisma:db:deploy": "prisma db push",
-        "prisma:mirgate": "prisma migrate deploy"
+        "prisma:migrate": "prisma migrate deploy"
     },
     "keywords": [],
     "author": "",
