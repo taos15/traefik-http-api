@@ -1,18 +1,20 @@
 {
     "name": "traefik-config-api",
-    "version": "1.0.0",
-    "description": "",
+    "version": "0.0.0",
+    "description": "An api config provider for Traefik",
     "main": "dist/index.js",
     "scripts": {
         "dev": "ts-node-dev --poll src/index.ts",
         "build": "rimraf ./dist && tsc",
         "start": "pnpm run build && console-ninja node dist/index.js",
         "start:watch": "nodemon dist/index.js",
+        "tsx:watch": "ts-node-dev src/index.ts",
         "start:watch-kill": "lsof -ti :4000 | xargs kill -9 && nodemon dist/index.js",
         "prisma:init": "prisma migrate dev --name init &&  prisma generate",
         "start:ts": "rimraf ./dist && tsc --watch",
         "start:dev": "concurrently \"pnpm run start:ts\" \"console-ninja pnpm run start:watch\"",
         "start:ninja": " console-ninja pnpm run start:dev",
+        "prisma:seed": "ts-node-dev src/db/seed.ts",
         "prisma:generate": "prisma generate",
         "prisma:db:deploy": "prisma db push",
         "prisma:mirgate": "prisma migrate deploy"
@@ -32,6 +34,7 @@
         "rimraf": "^5.0.1",
         "ts-node": "^10.9.1",
         "ts-node-dev": "^2.0.0",
+        "tsx": "^3.12.7",
         "typescript": "^5.0.4"
     },
     "dependencies": {
