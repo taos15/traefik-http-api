@@ -2,7 +2,7 @@ import { getTraefikContainers } from "./getTraefikContainers";
 
 export async function getFilteredServices() {
     const traefikContainers = await getTraefikContainers();
-    return traefikContainers.map((container) => {
+    return traefikContainers?.map((container) => {
         const keyName = container.Name.replace(/^\//, "").replace(/^\w/, (c: any) => c.toUpperCase());
         const containerWebuiPort =
             container.Labels["traefik.webuiport"]?.split(",") ??

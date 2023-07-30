@@ -1,16 +1,14 @@
-import { PrismaClient } from "@prisma/client";
 import cors from "cors";
 import express, { Request, Response } from "express";
 import morgan from "morgan";
 import { addRoutesToTraefik } from "./addRoutesToTraefik";
 import { addServicesToTraefik } from "./addServicesToTraefik";
 import { traefik } from "./config/traefikConfigTemplate";
+import { prisma } from "./db/client";
 import { getTraefikContainers } from "./getTraefikContainers";
 import { authRouter } from "./routes/authRoute";
 
 export const app = express();
-
-export const prisma = new PrismaClient();
 
 app.use(cors());
 app.use(express.json());
@@ -42,7 +40,7 @@ app.get("/api/:ver/servers", (req: Request, res: Response) => {
         } catch (err) {
             await prisma.$disconnect();
             console.log(`Endpoint requested: ${req.originalUrl}`, err);
-            res.status(500).send("Something went wrong.");
+            res.status(400).send("Something went wrong.");
         }
     })();
 });
@@ -65,7 +63,7 @@ app.post("/api/:ver/servers/", (req: Request, res: Response) => {
         } catch (err) {
             await prisma.$disconnect();
             console.log(`Endpoint requested: ${req.originalUrl}`, err);
-            res.status(500).send("Something went wrong.");
+            res.status(400).send("Something went wrong.");
         }
     })();
 });
@@ -90,7 +88,7 @@ app.put("/api/:ver/servers/:id", (req: Request, res: Response) => {
         } catch (err) {
             await prisma.$disconnect();
             console.log(`Endpoint requested: ${req.originalUrl}`, err);
-            res.status(500).send("Something went wrong.");
+            res.status(400).send("Something went wrong.");
         }
     })();
 });
@@ -109,7 +107,7 @@ app.delete("/api/:ver/servers/:id", (req: Request, res: Response) => {
         } catch (err) {
             await prisma.$disconnect();
             console.log(`Endpoint requested: ${req.originalUrl}`, err);
-            res.status(500).send("Something went wrong.");
+            res.status(400).send("Something went wrong.");
         }
     })();
 });
@@ -130,7 +128,7 @@ app.get("/api/:ver/traefikconfig", (req: Request, res: Response) => {
         } catch (err) {
             await prisma.$disconnect();
             console.log(`Endpoint requested: ${req.originalUrl}`, err);
-            res.status(500).send("Something went wrong.");
+            res.status(400).send("Something went wrong.");
         }
     })();
 });
@@ -142,7 +140,7 @@ app.get("*", (req: Request, res: Response) => {
         } catch (err) {
             await prisma.$disconnect();
             console.log(`Endpoint requested: ${req.originalUrl}`, err);
-            res.status(500).send("Something went wrong.");
+            res.status(400).send("Something went wrong.");
         }
     })();
 });

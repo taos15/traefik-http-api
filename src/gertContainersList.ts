@@ -1,5 +1,5 @@
-import { prisma } from "./app";
 import { createDockerServcersInstances } from "./createDockerServcersInstances";
+import { prisma } from "./db/client";
 
 export async function gertContainersList() {
     try {

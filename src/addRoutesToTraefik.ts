@@ -3,5 +3,7 @@ import { getFilteredRoutes } from "./getFilteredRoutes";
 
 export async function addRoutesToTraefik() {
     const filteredRoutes = await getFilteredRoutes();
-    Object.assign(traefik.http.routers, ...filteredRoutes);
+    if (filteredRoutes) {
+        Object.assign(traefik.http.routers, ...filteredRoutes);
+    }
 }
