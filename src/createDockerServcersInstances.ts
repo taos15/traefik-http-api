@@ -2,7 +2,7 @@ import Docker from "dockerode";
 import { Icontainerserver } from "./app";
 let dockerServersInstancesHolder: Docker[] = [];
 export const createDockerServcersInstances = (servers: Icontainerserver[]): Docker[] => {
-    if (dockerServersInstancesHolder.length === 0) {
+    if (dockerServersInstancesHolder.length !== servers.length) {
         const dockerServersInstances = servers.map((docker) => {
             return new Docker({
                 host: docker.host,

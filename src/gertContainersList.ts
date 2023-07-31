@@ -15,6 +15,7 @@ export async function gertContainersList() {
                 }));
             }),
         );
+        await prisma.$disconnect();
         return containerList;
     } catch (error) {
         console.error("there was an error while getting the containers from the database:", error);

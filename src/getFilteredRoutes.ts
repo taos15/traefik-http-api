@@ -7,10 +7,13 @@ export async function getFilteredRoutes() {
         const keyName =
             container.Labels["traefik.name"] ??
             container.Name.replace(/^\//, "").replace(/^\w/, (c: any) => c.toUpperCase());
+
         const constainerHostname = container.Labels["traefik.hostname"] ?? keyName;
+
         const containerMiddlewares: string[] =
             container.Labels["traefik.middlewares"]?.split(",") ??
             (container.Labels["authelia_auth"] === "false" ? [] : ["auth"]);
+
         const containerEntrypoints = container.Labels["traefik.entrypoints"]?.split(",") ?? ["https"];
         return {
             [keyName]: {
