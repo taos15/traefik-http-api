@@ -20,6 +20,6 @@ export async function getAllContainers() {
             return route;
         });
     } catch (error) {
-        console.error(error);
+        console.error((error as Error).message);
     }
 }

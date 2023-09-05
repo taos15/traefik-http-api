@@ -1,5 +1,9 @@
 import { gertContainersList } from "./gertContainersList";
 
+/**
+ * Get a array of array of containers and flat it to ony one array
+ * @returns {}
+ */
 export async function getCombinedContainerlist() {
     try {
         const containerList = await gertContainersList();
@@ -8,6 +12,6 @@ export async function getCombinedContainerlist() {
             return mergedContainerList;
         }
     } catch (error) {
-        console.error(error);
+        console.error((error as Error).message);
     }
 }

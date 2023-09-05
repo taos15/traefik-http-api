@@ -1,7 +1,7 @@
-import { getAllContainers } from "./getAllContainers";
+import { getAllContainers } from "../docker/getAllContainers";
 
 export async function getTraefikContainers() {
-    const containers = await getAllContainers();
+    let containers = await getAllContainers();
     return containers?.filter(
         (itemTofilter) => itemTofilter.Labels["traefik.enable"] === "true" || itemTofilter.Labels["swag"] === "enable",
     );
