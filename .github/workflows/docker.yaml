@@ -5,7 +5,9 @@ name: Master CI
 # documentation.
 on:
   push:
-    branches: [master]
+    branches:
+      - master
+      - preview
     paths-ignore:
       - ".github/**"
       - "**.md"
