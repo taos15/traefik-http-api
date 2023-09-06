@@ -15,7 +15,7 @@ ARG DOMAIN=yourdomain.tld
 ENV DATABASE_URL=${DATABASE_URL}
 ENV DOMAIN=${DOMAIN}
 
-RUN mv traefikConfigTemplate.ts.example traefikConfigTemplate.ts && \
+RUN mv .config/traefikConfigTemplate.ts.example traefikConfigTemplate.ts && \
 npm run prisma:init && \
 npm run build
 
