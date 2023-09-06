@@ -34,7 +34,7 @@ ENV AUTHELIAADDRESS=${AUTHELIAADDRESS}
 
 WORKDIR /usr/src/app
 
-COPY package*.json .
+COPY --from=build package*.json .
 COPY --from=build /usr/src/app/prisma/schema.prisma ./schema.prisma
 
 RUN npm ci --omit=dev && \
