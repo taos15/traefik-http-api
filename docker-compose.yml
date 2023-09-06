@@ -3,7 +3,6 @@ services:
     api:
         build:
             context: .
-            target: production
         environment:
             - DATABASE_URL=file:./db/dev.db
             - DOMAIN=yourdomain.tld

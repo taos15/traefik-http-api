@@ -5,7 +5,7 @@
     "main": "dist/index.js",
     "scripts": {
         "dev": "ts-node-dev --poll src/index.ts",
-        "build": "rimraf ./dist && tsc",
+        "build": "tsc",
         "start": "pnpm run build && console-ninja node dist/index.js",
         "start:ts": "rimraf ./dist && tsc --watch",
         "start:watch": "nodemon dist/index.js",
