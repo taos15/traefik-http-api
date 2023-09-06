@@ -69,6 +69,6 @@ dist-ssr
 **/prisma/db
 **/prisma/migrations
 
-# local files
-**/traefikConfigTemplate.?s
-**/traefikConfigTemplate.?s.map
+# # local files
+# **/traefikConfigTemplate.?s
+# **/traefikConfigTemplate.?s.map

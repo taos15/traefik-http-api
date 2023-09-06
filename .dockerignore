@@ -38,3 +38,8 @@ dist/
 *.njsproj
 *.sln
 *.sw?
+
+# databases
+**/*.db*
+**/prisma/db
+**/prisma/migrations
