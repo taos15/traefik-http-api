@@ -14,13 +14,15 @@ COPY . /usr/src/app
 WORKDIR /usr/src/app
 RUN apt-get update -y && apt-get install -y openssl
 
+RUN mv src/config/traefikConfigTemplate.ts.example src/config/traefikConfigTemplate.ts
+
+
 FROM base AS prod-deps
 RUN --mount=type=cache,id=pnpm,target=/pnpm/store pnpm install --prod --frozen-lockfile
 
 FROM base AS build
 RUN --mount=type=cache,id=pnpm,target=/pnpm/store pnpm install --frozen-lockfile
-RUN mv ./src/config/traefikConfigTemplate.ts.example ./src/config/traefikConfigTemplate.ts && \
-pnpm run prisma:generate && \
+RUN pnpm run prisma:generate && \
 pnpm run build
 
 # Production Stage 
