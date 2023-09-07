@@ -4,15 +4,15 @@ name: Master CI
 # separate terms of service, privacy policy, and support
 # documentation.
 on:
-  push:
-    branches:
-      - master
-      - preview
-    paths-ignore:
-      - ".github/**"
-      - "**.md"
-    tags:
-      - v*
+  # push:
+  #   branches:
+  #     - master
+  #     - preview
+  #   paths-ignore:
+  #     - ".github/**"
+  #     - "**.md"
+  #   tags:
+  #     - v*
 
   workflow_dispatch:
 
