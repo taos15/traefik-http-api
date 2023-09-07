@@ -1,9 +1,16 @@
-name: docker CI
+name: MultiArch Master CI
 
 on:
   push:
     branches:
-      - "docker"
+      - master
+    paths-ignore:
+      - ".github/**"
+      - "**.md"
+    tags:
+      - v*
+
+  workflow_dispatch:
 
 env:
   # Use docker.io for Docker Hub if empty
