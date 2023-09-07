@@ -13,7 +13,6 @@ on:
   workflow_dispatch:
 
 env:
-  # Use docker.io for Docker Hub if empty
   REGISTRY: ghcr.io
   # github.repository as <account>/<repo>
   IMAGE_NAME: ${{ github.repository }}
@@ -88,9 +87,7 @@ jobs:
         id: meta
         uses: docker/metadata-action@v4
         with:
-          images:
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
-            # generate Docker tags based on the following events/attributes
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: |
             type=raw,value=latest
             type=pep440,pattern={{version}}

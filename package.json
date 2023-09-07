@@ -1,7 +1,12 @@
 {
     "name": "traefik-config-api",
     "version": "0.0.1",
+    "private": true,
     "description": "An api config provider for Traefik",
+    "repository": {
+        "type": "git",
+        "url": "https://github.com/taos15/traefik-http-api.git"
+      },
     "main": "dist/index.js",
     "scripts": {
         "dev": "ts-node-dev --poll src/index.ts",
@@ -20,8 +25,8 @@
         "prisma:migrate": "prisma migrate deploy"
     },
     "keywords": [],
-    "author": "",
-    "license": "ISC",
+    "author": "Taos15",
+    "license": "MIT",
     "devDependencies": {
         "@types/cors": "^2.8.13",
         "@types/dockerode": "^3.3.19",
