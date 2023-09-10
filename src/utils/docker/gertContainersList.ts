@@ -1,10 +1,9 @@
 import { prisma } from "../../db/client";
-import { createDockerServersInstances } from "./createDockerServcersInstances";
+import { createDockerServers } from "./createDockerServers";
 
 export async function gertContainersList() {
     try {
-        let servers = await prisma.containerserver.findMany();
-        let dockerServersInstances = createDockerServersInstances(servers);
+        let dockerServersInstances = await createDockerServers();
         let containerList = await Promise.all(
             dockerServersInstances.map(async (dockerInstance) => {
                 let containers = await dockerInstance.listContainers({ all: true });

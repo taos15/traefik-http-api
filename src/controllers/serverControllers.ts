@@ -1,6 +1,8 @@
 import { Request, Response } from "express";
 import { prisma } from "../db/client";
+import { findDockerInstance } from "../utils/docker/findDockerInstance";
 import { gertContainersList } from "../utils/docker/gertContainersList";
+import { getCombinedContainerlist } from "../utils/docker/getCombinedContainerlist";
 
 export const servers_get = (req: Request, res: Response) => {
     (async () => {
@@ -8,6 +10,23 @@ export const servers_get = (req: Request, res: Response) => {
             let servers = await prisma.containerserver.findMany();
             await prisma.$disconnect();
             res.status(200).json(servers);
+        } catch (err) {
+            await prisma.$disconnect();
+            console.log(`Endpoint requested: ${req.originalUrl}`, (err as Error).message);
+            res.status(404).send("Something went wrong.");
+        }
+    })();
+};
+
+export const servers_getByName = (req: Request, res: Response) => {
+    (async () => {
+        try {
+            const { name } = req.params;
+            console.log(name);
+            const dockerServer = await findDockerInstance(name);
+
+            const allContainers = await getCombinedContainerlist();
+            allContainers && res.status(200).json(dockerServer);
         } catch (err) {
             await prisma.$disconnect();
             console.log(`Endpoint requested: ${req.originalUrl}`, (err as Error).message);
