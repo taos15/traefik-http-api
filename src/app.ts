@@ -2,6 +2,7 @@ import cors from "cors";
 import express, { Request, Response } from "express";
 import morgan from "morgan";
 import { authRouter } from "./routes/authRoute";
+import { dockerContainerRoute } from "./routes/dockerContainerRoute";
 import { serverRouter } from "./routes/serverRoute";
 import { traefikRouter } from "./routes/traefikRoute";
 
@@ -12,6 +13,7 @@ app.use(express.json());
 app.use(morgan("dev"));
 app.use("/auth", authRouter);
 app.use("/api/v1/servers", serverRouter);
+app.use("/api/v1/containers", dockerContainerRoute);
 app.use("/api/v1/traefikconfig", traefikRouter);
 
 export const domain = process.env.DOMAIN;
