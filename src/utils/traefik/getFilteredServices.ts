@@ -15,7 +15,11 @@ export async function getFilteredServices() {
 
         const loadBalancerServers = [
             {
-                url: `${container.serverHostname}:${containerWebuiPort}`,
+                url: `${
+                    serviceScheme === "https"
+                        ? container.serverHostname.replace("http", "https")
+                        : container.serverHostname
+                }:${containerWebuiPort}`,
             },
         ];
 

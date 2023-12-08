@@ -47,8 +47,9 @@ labels:
     - traefik.enable=true # reverse proxy the container
     - traefik.name=soemthing # router and services name
     - traefik.hostname=someApplicationName # overwrite the hostname like overwritten.domain.tld
-    - traefik.webuiport=8080 # overwrite the webUI port like overwritten.domain.tld
-    - traefik.service=soemthingService # overwrite the service that is assigned to the router
+    - traefik.webuiport=8080 # overwrite the webUI port like 192.168.1.1:8080
+    - traefik.service.scheme=http # The schema the services will use, either http/https. It will be added to the front of the url like scheme://service.yourDomain.tld
+    - traefik.service=someThingService # overwrite the service that is assigned to the router
     - traefik.http.disable=true # disable http api, useful if the container is running in the same server as traefik and you want to let the traefik docker provider handle the integration
     - traefik.middlewares=something,something,something@file,somthingelse@http # comma separated middleware, the server convert it to an array, default to auth
     - authelia_auth=false # by defaul the server add Authelia as middleware (auth), if you set the middleware label this get overwritten, this label only works when no middleware are defined in the traefik.middleware label
