@@ -12,8 +12,8 @@ RUN apt-get update -y && apt-get install -y openssl git \
 RUN git clone https://github.com/taos15/traefik-http-webui
 WORKDIR /traefik-http-webui
 RUN --mount=type=cache,id=pnpm,target=/pnpm/store pnpm install --frozen-lockfile
-RUN pnpm run build && \
-mv dist UI
+RUN pnpm run build 
+RUN mv dist UI
 
 # Build Stage 
 FROM node:20-slim AS base
