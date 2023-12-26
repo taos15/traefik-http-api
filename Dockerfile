@@ -1,6 +1,6 @@
 # Build Stage 
 FROM node:20-slim AS ui-build
-ARG VITE_SERVER_API=http://192.168.1.1:4000
+ARG VITE_SERVER_API=${SERVER_API:-http://localhost:4000}
 
 ENV VITE_SERVER_API=${VITE_SERVER_API}
 ENV PNPM_HOME="/pnpm"
@@ -9,7 +9,7 @@ RUN corepack enable
 RUN apt-get update -y && apt-get install -y openssl git \
 && apt-get clean
 
-RUN git clone --depth 1 https://github.com/taos15/traefik-http-webui
+RUN git clone https://github.com/taos15/traefik-http-webui
 WORKDIR /traefik-http-webui
 RUN --mount=type=cache,id=pnpm,target=/pnpm/store pnpm install --frozen-lockfile
 RUN pnpm run build && \
@@ -53,5 +53,5 @@ COPY --from=ui-build /traefik-http-webui/UI /app/UI
 RUN pnpm run prisma:init
 
 EXPOSE 4000
-VOLUME /app/dist/config
+VOLUME /app
 CMD [ "node", "dist/index.js" ]

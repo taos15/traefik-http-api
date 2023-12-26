@@ -35,6 +35,7 @@ coverage
 
 dist-ssr
 *.local
+UI/*
 
 # Environment variables
 *.override.env
@@ -68,6 +69,7 @@ dist-ssr
 **/*.db*
 **/prisma/db
 **/prisma/migrations
+db
 
 # # local files
 # **/traefikConfigTemplate.?s
