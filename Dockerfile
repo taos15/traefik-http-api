@@ -1,6 +1,6 @@
 # Build Stage 
 FROM node:20-slim AS ui-build
-ARG VITE_SERVER_API=${SERVER_API:-http://localhost:4000}
+# ARG VITE_SERVER_API=${SERVER_API:-http://localhost:4000}
 
 ENV VITE_SERVER_API=${VITE_SERVER_API}
 ENV PNPM_HOME="/pnpm"
