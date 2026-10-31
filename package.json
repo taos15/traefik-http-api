@@ -2,6 +2,7 @@
     "name": "traefik-config-api",
     "version": "0.0.2",
     "private": true,
+    "packageManager": "pnpm@10.12.4",
     "description": "An api config provider for Traefik",
     "repository": {
         "type": "git",
