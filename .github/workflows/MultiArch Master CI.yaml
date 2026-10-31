@@ -12,6 +12,10 @@ on:
 
   workflow_dispatch:
 
+permissions:
+  contents: read
+  packages: write
+
 env:
   REGISTRY: ghcr.io
   # github.repository as <account>/<repo>
@@ -23,9 +27,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        platform:
-          - linux/amd64
-          - linux/arm64
+        include:
+          - platform: linux/amd64
+            platform_id: linux-amd64
+          - platform: linux/arm64
+            platform_id: linux-arm64
     steps:
       - name: Checkout
         uses: actions/checkout@v3
@@ -47,7 +53,7 @@ jobs:
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
-          password: ${{ secrets.DOCKER_TOKEN }}
+          password: ${{ secrets.GITHUB_TOKEN }}
       - name: Build and push by digest
         id: build
         uses: docker/build-push-action@v4
@@ -66,7 +72,7 @@ jobs:
       - name: Upload digest
         uses: actions/upload-artifact@v4
         with:
-          name: digests
+          name: digests-${{ matrix.platform_id }}
           path: /tmp/digests/*
           if-no-files-found: error
           retention-days: 1
@@ -79,7 +85,8 @@ jobs:
       - name: Download digests
         uses: actions/download-artifact@v4.1.7
         with:
-          name: digests
+          pattern: digests-*
+          merge-multiple: true
           path: /tmp/digests
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v2
@@ -96,7 +103,7 @@ jobs:
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
-          password: ${{ secrets.DOCKER_TOKEN }}
+          password: ${{ secrets.GITHUB_TOKEN }}
       - name: Create manifest list and push
         working-directory: /tmp/digests
         run: |
