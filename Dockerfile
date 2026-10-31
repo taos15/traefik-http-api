@@ -1,22 +1,25 @@
 # Build Stage 
 FROM node:20-slim AS ui-build
-# ARG VITE_SERVER_API=${SERVER_API:-http://localhost:4000}
+ARG VITE_SERVER_API
 
 ENV VITE_SERVER_API=${VITE_SERVER_API}
 ENV PNPM_HOME="/pnpm"
 ENV PATH="$PNPM_HOME:$PATH"
 RUN corepack enable
+RUN corepack install --global pnpm@10.12.4
 RUN apt-get update -y && apt-get install -y openssl git \
 && apt-get clean
 
 RUN git clone https://github.com/taos15/traefik-http-webui
 WORKDIR /traefik-http-webui
+RUN printf "onlyBuiltDependencies:\n  - esbuild\n" > pnpm-workspace.yaml
 RUN --mount=type=cache,id=pnpm,target=/pnpm/store pnpm install --frozen-lockfile
 RUN pnpm run build 
 RUN mv dist UI
 
 # Build Stage 
 FROM node:20-slim AS base
+ARG VITE_SERVER_API
 ARG DATABASE_URL=file:./db/dev.db
 ARG DOMAIN=yourdomain.tld
 ARG AUTHELIAADDRESS=http://192.168.1.1:9091
@@ -28,6 +31,7 @@ ENV VITE_SERVER_API=${VITE_SERVER_API}
 ENV PNPM_HOME="/pnpm"
 ENV PATH="$PNPM_HOME:$PATH"
 RUN corepack enable
+RUN corepack install --global pnpm@10.12.4
 COPY . /app
 WORKDIR /app
 RUN apt-get update -y && apt-get install -y openssl \
