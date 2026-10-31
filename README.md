@@ -1,71 +1,61 @@
-# traefik-http-api
+# Traefik HTTP API — Rust
 
-## work in process
+Aggregate independent Docker Engines and provide a single Traefik HTTP-provider dynamic configuration and Dioxus WebUI. The [rewrite plan and progress ledger](RUST_REWRITE_PLAN.md) records decisions and remaining work.
 
-## Instalation
+## Run locally
 
-1. Clone repo
-1. Run `pnpm i`
-1. Copy the `.env.example` file and rename it to `.env`
-1. Rename the `traefikConfigTemplate.ts.example` to `traefikConfigTemplate.ts` and change the authelia ip and you domain
+Requires Rust 1.99+, the `wasm32-unknown-unknown` target, and `wasm-bindgen-cli` 0.2.130.
 
-## Run the App
-
-To run the app run:
-
-```bash
-pnpm run build
-pnpm run start
-
+```sh
+rustup target add wasm32-unknown-unknown
+cargo install wasm-bindgen-cli --version 0.2.130 --locked
+cargo build --release --no-default-features --features web --target wasm32-unknown-unknown
+wasm-bindgen --target web --out-dir web/dist --out-name app target/wasm32-unknown-unknown/release/traefik-web.wasm
+cargo run --no-default-features --features server --bin traefik-server
 ```
 
-### The app will be available at you localhost port 4001
+Create `data/`, set `DOMAIN`, `DATABASE_URL=sqlite://data/traefik.db`, and set a long `ADMIN_BOOTSTRAP_PASSWORD` before first run. Login as `admin`. The generated `web/dist/app.js`, `.wasm`, and `snippets/` assets must be rebuilt after UI changes. Container deployment: `docker compose up --build` with those settings provided in `.env` (see `.env.example`). Mount your Docker socket, SSH credentials, or TLS certificate files as appropriate for each connection.
 
-- If you get an error saying that the port is been use you can run `lsof -ti :4001 | xargs kill -9` to kill the
-    process running in that port.
+**Existing Prisma SQLite database:** back it up while the old service is stopped, then use the backup as the new `DATABASE_URL` file. Migrations create new tables alongside `containerserver`, and startup imports server IDs/names/HTTP endpoints with their former `enable` state using INSERT OR IGNORE. Inspect the imported Traefik and browser hosts; the old HTTP API host might not be reachable from either. The legacy plaintext `User` table is ignored; a new admin password is required. Keep the original backup until verified. Never overwrite the original database with an empty file.
 
-## Treafik setup
+## Traefik setup
 
-you need to add a `http` provider to your traefik static config. It looks like this:
+In Traefik install configuration, enable the HTTP provider:
 
 ```yaml
-# http API provider
+providers:
+  file:
+    filename: /etc/traefik/dynamic.yml
+    watch: true
+  http:
+    endpoint: http://api:4000/api/v1/traefikconfig
+```
+
+Traefik polls that GET endpoint. It is anonymous by default on the same listener as the WebUI; restrict access with networking/firewall. To require a bearer token instead, set `PROVIDER_TOKEN` on the app and configure `providers.http.headers.Authorization: 'Bearer <token>'` in Traefik. Management routes and UI always require login.
+
+To use authentication for generated routers, define a middleware once in Traefik's *dynamic file configuration* and set `DEFAULT_AUTH_MIDDLEWARE=default-forward-auth@file` on the app:
+
+```yaml
 http:
-    endpoint: "http://localhost:4000/api/1/traefikconfig"
+  middlewares:
+    default-forward-auth:
+      forwardAuth:
+        address: https://auth.example.com/check
 ```
 
-Change the IP address to the IP of the server running the api server.
+Without `DEFAULT_AUTH_MIDDLEWARE` automatic authentication is **off**. `traefik.forwardauth=false` opts a container out of the default when configured; `traefik.middlewares` supplies an explicit replacement list. The old `authelia_auth=false` remains an alias. Keep TLS defaults on Traefik entrypoints or configure them separately; the app does not replace Traefik's install configuration.
 
-## Container options
+## Docker servers and labels
 
-### Labels
+Add servers in the UI with `http://host:2375` (Docker socket proxy), `ssh://user@host`, a TLS endpoint with client key/cert/CA paths, or a Unix socket path. Configure a **Traefik-reachable host** and a **browser-reachable host** independently of the Engine API address. Docker publishes container port 80 as host port 8080 with `-p 8080:80`; the generated service URL uses `<traefik-host>:8080`, and the WebUI link uses `<browser-host>:8080`. Loopback-only ports do not provide remote reachability. Docker proxy permissions determine which read and write operations work.
 
-You can set this labels in your container to overwrite default values
+The generator recognizes `traefik.enable=true` or `swag=enable`, `traefik.name`, `traefik.hostname`, `traefik.webuiport` (explicit published **host** port), `traefik.service.scheme`, `traefik.service`, `traefik.http.disable=true`, `traefik.middlewares`, `traefik.entrypoints`, `traefik.forwardauth=false`, and legacy `authelia_auth=false`. Only running containers get generated routers. `net.unraid.docker.webui` with `[IP]` and `[PORT:container-port]` and `traefik.webui.url` help construct browser links; `traefik.webui.host` overrides the browser host. `net.unraid.docker.icon` supplies an HTTPS icon.
 
-```yaml
-labels:
-    - traefik.enable=true # reverse proxy the container
-    - traefik.name=soemthing # router and services name
-    - traefik.hostname=someApplicationName # overwrite the hostname like overwritten.domain.tld
-    - traefik.webuiport=8080 # overwrite the webUI port like 192.168.1.1:8080
-    - traefik.service.scheme=http # Default to http. The schema the services will use, either http/https. It will be added to the front of the url like scheme://service.yourDomain.tld 
-    - traefik.service=someThingService # overwrite the service that is assigned to the router
-    - traefik.http.disable=true # disable http api, useful if the container is running in the same server as traefik and you want to let the traefik docker provider handle the integration
-    - traefik.middlewares=something,something,something@file,somthingelse@http # comma separated middleware, the server convert it to an array, default to auth
-    - authelia_auth=false # by defaul the server add Authelia as middleware (auth), if you set the middleware label this get overwritten, this label only works when no middleware are defined in the traefik.middleware label
-    - traefik.entrypoints=someEntrypoints,anotheEntrypoints # comma separated entrypoints, the server convert it to an array, default to https
+## Verify
+
+```sh
+cargo fmt --check
+cargo clippy --all-targets --features server -- -D warnings
+cargo test --features server
+cargo check --no-default-features --features web --target wasm32-unknown-unknown
 ```
-
-## Environment variables
-
-You can set this labels in your container to overwrite default values
-
-```yaml
-environment:
-    - DOMAIN=domain.tld # your domain name
-    - DATABASE_URL=file:./db/dev.db # database url, in future it will be use to change the current sqlite database to another database like postgres
-```
-
-## Notes
-
-The server that the http api provider gets the running containers from needs to have a dockersocket proxy running.

@@ -1,11 +1,16 @@
-version: "3"
 services:
-    api:
-        build:
-            context: .
-        environment:
-            - DATABASE_URL=file:./db/dev.db
-            - DOMAIN=yourdomain.tld
-            - AUTHELIAADDRESS=http://192.168.1.1:9091
-        ports:
-            - 4000:4000
+  api:
+    build: .
+    ports:
+      - "4000:4000"
+    volumes:
+      - ./data:/app/data
+      # For SSH: mount a read-only SSH config/key/known_hosts directory as needed.
+      # For Unix socket: mount the socket explicitly and configure its path in the UI.
+      # For mTLS: mount client certificate paths read-only.
+    environment:
+      DOMAIN: ${DOMAIN:?set DOMAIN}
+      DATABASE_URL: sqlite://data/traefik.db
+      ADMIN_BOOTSTRAP_PASSWORD: ${ADMIN_BOOTSTRAP_PASSWORD:?set password on first start}
+      DEFAULT_AUTH_MIDDLEWARE: ${DEFAULT_AUTH_MIDDLEWARE:-}
+      PROVIDER_TOKEN: ${PROVIDER_TOKEN:-}
