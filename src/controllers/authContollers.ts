@@ -20,7 +20,9 @@ export const signup_post = (req: Request, res: Response) => {
         } catch (err) {
             await prisma.$disconnect();
             console.error(
-                `Endpoint requested: ${req.originalUrl}, Failed to create user ${user.username}`,
+                "Endpoint requested: %s, Failed to create user %s",
+                req.originalUrl,
+                user.username,
                 (err as Error).message,
             );
             res.status(400).send("User not created");
@@ -42,7 +44,7 @@ export const login_post = (req: Request, res: Response) => {
             res.status(201).json(`Loged in as: ${userFound}`);
         } catch (err) {
             await prisma.$disconnect();
-            console.log(`Endpoint requested: ${req.originalUrl}, Failed to login:`, (err as Error).message);
+            console.log("Endpoint requested: %s, Failed to login:", req.originalUrl, (err as Error).message);
             res.status(400).send(`Login Failed`);
         }
     })();

@@ -12,7 +12,7 @@ export const servers_get = (req: Request, res: Response) => {
             res.status(200).json(servers);
         } catch (err) {
             await prisma.$disconnect();
-            console.log(`Endpoint requested: ${req.originalUrl}`, (err as Error).message);
+            console.log("Endpoint requested: %s", req.originalUrl, (err as Error).message);
             res.status(404).send("Something went wrong.");
         }
     })();
@@ -29,7 +29,7 @@ export const servers_getByName = (req: Request, res: Response) => {
             allContainers && res.status(200).json(dockerServer);
         } catch (err) {
             await prisma.$disconnect();
-            console.log(`Endpoint requested: ${req.originalUrl}`, (err as Error).message);
+            console.log("Endpoint requested: %s", req.originalUrl, (err as Error).message);
             res.status(404).send("Something went wrong.");
         }
     })();
@@ -53,7 +53,7 @@ export const server_post = (req: Request, res: Response) => {
             res.status(201).json(servers);
         } catch (err) {
             await prisma.$disconnect();
-            console.log(`Endpoint requested: ${req.originalUrl}`, (err as Error).message);
+            console.log("Endpoint requested: %s", req.originalUrl, (err as Error).message);
             res.status(404).send("Something went wrong.");
         }
     })();
@@ -80,7 +80,7 @@ export const server_put = (req: Request, res: Response) => {
             res.status(201).json(servers);
         } catch (err) {
             await prisma.$disconnect();
-            console.log(`Endpoint requested: ${req.originalUrl}`, (err as Error).message);
+            console.log("Endpoint requested: %s", req.originalUrl, (err as Error).message);
             res.status(400).send("Something went wrong.");
         }
     })();
@@ -100,7 +100,7 @@ export const server_delete = (req: Request, res: Response) => {
             res.status(200).json(`Server ${deletedServer.name} has been deleted`);
         } catch (err) {
             await prisma.$disconnect();
-            console.log(`Endpoint requested: ${req.originalUrl}`, (err as Error).message);
+            console.log("Endpoint requested: %s", req.originalUrl, (err as Error).message);
             res.status(404).send("Something went wrong.");
         }
     })();

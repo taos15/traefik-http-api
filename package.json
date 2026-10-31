@@ -48,6 +48,7 @@
         "dockerode": "^3.3.5",
         "dotenv": "^16.6.1",
         "express": "^4.22.3",
+        "express-rate-limit": "^8.7.2",
         "js-yaml": "^4.3.2",
         "morgan": "^1.12.1",
         "prisma": "^5.22.0",

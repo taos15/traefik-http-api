@@ -12,7 +12,7 @@ export const dockerContainer_getAll = (req: Request, res: Response) => {
             res.status(200).json(allContainers);
         } catch (err) {
             await prisma.$disconnect();
-            console.log(`Endpoint requested: ${req.originalUrl}`, (err as Error).message);
+            console.log("Endpoint requested: %s", req.originalUrl, (err as Error).message);
             res.status(404).send("Something went wrong.");
         }
     })();
@@ -29,7 +29,7 @@ export const dockerContainer_getByServer = (req: Request, res: Response) => {
             res.status(200).json(containers);
         } catch (err) {
             await prisma.$disconnect();
-            console.log(`Endpoint requested: ${req.originalUrl}`, (err as Error).message);
+            console.log("Endpoint requested: %s", req.originalUrl, (err as Error).message);
             res.status(404).send("Something went wrong.");
         }
     })();
@@ -47,7 +47,7 @@ export const dockerContainer_getByID = (req: Request, res: Response) => {
             res.status(200).json(await container.inspect());
         } catch (err) {
             await prisma.$disconnect();
-            console.log(`Endpoint requested: ${req.originalUrl}`, (err as Error).message);
+            console.log("Endpoint requested: %s", req.originalUrl, (err as Error).message);
             res.status(404).send("Something went wrong.");
         }
     })();
@@ -85,7 +85,7 @@ export const dockerContainer_postByID = (req: Request, res: Response) => {
             res.status(200).json(`${command} command have been sent to the container`);
         } catch (err) {
             await prisma.$disconnect();
-            console.log(`Endpoint requested: ${req.originalUrl}`, (err as Error).message);
+            console.log("Endpoint requested: %s", req.originalUrl, (err as Error).message);
             res.status(404).send("Something went wrong.");
         }
     })();
@@ -97,7 +97,7 @@ export const dockerContainer_post = (req: Request, res: Response) => {
             res.status(200).json("Post response");
         } catch (err) {
             await prisma.$disconnect();
-            console.log(`Endpoint requested: ${req.originalUrl}`, (err as Error).message);
+            console.log("Endpoint requested: %s", req.originalUrl, (err as Error).message);
             res.status(404).send("Something went wrong.");
         }
     })();
@@ -109,7 +109,7 @@ export const dockerContainer_put = (req: Request, res: Response) => {
             res.status(200).json("Put response");
         } catch (err) {
             await prisma.$disconnect();
-            console.log(`Endpoint requested: ${req.originalUrl}`, (err as Error).message);
+            console.log("Endpoint requested: %s", req.originalUrl, (err as Error).message);
             res.status(400).send("Something went wrong.");
         }
     })();
@@ -121,7 +121,7 @@ export const dockerContainer_delete = (req: Request, res: Response) => {
             res.status(200).json("Delete response");
         } catch (err) {
             await prisma.$disconnect();
-            console.log(`Endpoint requested: ${req.originalUrl}`, (err as Error).message);
+            console.log("Endpoint requested: %s", req.originalUrl, (err as Error).message);
             res.status(404).send("Something went wrong.");
         }
     })();

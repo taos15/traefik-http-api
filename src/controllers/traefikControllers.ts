@@ -16,7 +16,7 @@ export const traefikConfig_get = (req: Request, res: Response) => {
             res.status(200).json(traefik);
         } catch (err) {
             await prisma.$disconnect();
-            console.log(`Endpoint requested: ${req.originalUrl}`, (err as Error).message);
+            console.log("Endpoint requested: %s", req.originalUrl, (err as Error).message);
             res.status(404).send("Something went wrong.");
         }
     })();
