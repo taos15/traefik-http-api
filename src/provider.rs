@@ -65,6 +65,63 @@ fn port_for(c: &Container, private: Option<u16>, published: Option<u16>) -> Opti
     }
 }
 
+// A single published TCP port does not imply an HTTP interface (for example,
+// Redis, PostgreSQL, and Docker socket proxies publish TCP ports too).
+fn non_web_port(port: u16) -> bool {
+    matches!(
+        port,
+        22 | 25
+            | 53
+            | 110
+            | 143
+            | 389
+            | 445
+            | 465
+            | 587
+            | 636
+            | 993
+            | 995
+            | 1883
+            | 2375
+            | 2376
+            | 3306
+            | 5432
+            | 5672
+            | 6379
+            | 6380
+            | 8883
+            | 9092
+            | 11211
+            | 15672
+            | 27017
+    )
+}
+
+fn fallback_web_port(c: &Container) -> Option<u16> {
+    let mut candidates: Vec<_> = c
+        .ports
+        .iter()
+        .filter(|p| reachable(p) && !non_web_port(p.private_port))
+        .filter_map(|p| p.public_port)
+        .collect();
+    candidates.sort_unstable();
+    candidates.dedup();
+    // If the container exposes several services, don't guess which one is a WebUI.
+    if candidates.len() == 1 && !non_web_port(candidates[0]) {
+        candidates.first().copied()
+    } else {
+        None
+    }
+}
+
+fn default_route_name(name: &str) -> String {
+    let mut chars = name.chars();
+    chars
+        .next()
+        .map(|first| first.to_uppercase().collect::<String>() + chars.as_str())
+        .unwrap_or_default()
+}
+
 pub fn webui_url(c: &Container, server: &DockerServer) -> Option<String> {
     if c.state != "running" {
         return None;
@@ -90,7 +147,7 @@ pub fn webui_url(c: &Container, server: &DockerServer) -> Option<String> {
         if parsed.username() != "" || parsed.password().is_some() || parsed.fragment().is_some() {
             return None;
         }
-        let published = parsed.port().or_else(|| port_for(c, None, None));
+        let published = parsed.port().or_else(|| fallback_web_port(c));
         if let Some(port) = published {
             port_for(c, None, Some(port))?;
         }
@@ -110,7 +167,7 @@ pub fn webui_url(c: &Container, server: &DockerServer) -> Option<String> {
         result.set_query(parsed.query());
         return Some(result.into());
     }
-    url("http", override_host, port_for(c, None, None)?, "/").ok()
+    url("http", override_host, fallback_web_port(c)?, "/").ok()
 }
 
 pub fn generate(
@@ -135,7 +192,11 @@ pub fn generate(
         let server = server_index
             .get(c.server_id.as_str())
             .ok_or_else(|| anyhow::anyhow!("unknown server"))?;
-        let name = l.get("traefik.name").map(String::as_str).unwrap_or(&c.name);
+        let fallback_name = default_route_name(&c.name);
+        let name = l
+            .get("traefik.name")
+            .map(String::as_str)
+            .unwrap_or(&fallback_name);
         let service = l.get("traefik.service").map(String::as_str).unwrap_or(name);
         let hostname = l
             .get("traefik.hostname")
@@ -228,11 +289,12 @@ pub fn route_owners(containers: &[Container], config: &Value) -> Vec<(String, St
             {
                 return None;
             }
+            let fallback_name = default_route_name(&c.name);
             let name = c
                 .labels
                 .get("traefik.name")
                 .map(String::as_str)
-                .unwrap_or(&c.name);
+                .unwrap_or(&fallback_name);
             let service = c
                 .labels
                 .get("traefik.service")
@@ -297,11 +359,11 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            config["http"]["services"]["app"]["loadBalancer"]["servers"][0]["url"],
+            config["http"]["services"]["App"]["loadBalancer"]["servers"][0]["url"],
             "http://10.0.0.1:9090"
         );
         assert_eq!(
-            config["http"]["routers"]["app"]["middlewares"][0],
+            config["http"]["routers"]["App"]["middlewares"][0],
             "default-forward-auth@file"
         );
     }
@@ -347,7 +409,7 @@ mod tests {
             Some("default-forward-auth@file"),
         )
         .unwrap();
-        assert_eq!(config["http"]["routers"]["app"]["middlewares"], json!([]));
+        assert_eq!(config["http"]["routers"]["App"]["middlewares"], json!([]));
         c.labels
             .insert("traefik.middlewares".into(), "other@file,admin@file".into());
         let config = generate(
@@ -358,7 +420,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            config["http"]["routers"]["app"]["middlewares"],
+            config["http"]["routers"]["App"]["middlewares"],
             json!(["other@file", "admin@file"])
         );
         c.state = "exited".into();
@@ -426,5 +488,105 @@ mod tests {
         );
         c.labels.insert("traefik.webuiport".into(), "8443".into());
         assert!(generate(&[c], &[server], "example.com", None).is_ok());
+    }
+
+    #[test]
+    fn a_published_database_or_docker_api_port_is_not_a_webui() {
+        let server = DockerServer {
+            id: "host".into(),
+            name: "host".into(),
+            transport: "http".into(),
+            endpoint: "http://host:2375".into(),
+            tls_key: None,
+            tls_cert: None,
+            tls_ca: None,
+            upstream_host: "host.lan".into(),
+            webui_host: "host.lan".into(),
+            enabled: true,
+        };
+        let mut container = Container {
+            id: "id".into(),
+            name: "postgres".into(),
+            image: "postgres".into(),
+            state: "running".into(),
+            health: None,
+            server_id: server.id.clone(),
+            server_name: server.name.clone(),
+            labels: HashMap::new(),
+            ports: vec![Port {
+                private_port: 5432,
+                public_port: Some(5433),
+                host_ip: Some("0.0.0.0".into()),
+                protocol: "tcp".into(),
+            }],
+            webui_url: None,
+        };
+        assert_eq!(webui_url(&container, &server), None);
+        container.ports[0].private_port = 2375;
+        container.ports[0].public_port = Some(2375);
+        assert_eq!(webui_url(&container, &server), None);
+        container.ports[0].private_port = 80;
+        container.ports[0].public_port = Some(8080);
+        assert_eq!(
+            webui_url(&container, &server).as_deref(),
+            Some("http://host.lan:8080/")
+        );
+        container.ports.push(Port {
+            host_ip: Some("::".into()),
+            ..container.ports[0].clone()
+        });
+        assert_eq!(
+            webui_url(&container, &server).as_deref(),
+            Some("http://host.lan:8080/")
+        );
+    }
+
+    #[test]
+    fn preserves_legacy_fallback_router_name_and_service() {
+        let server = DockerServer {
+            id: "host".into(),
+            name: "host".into(),
+            transport: "http".into(),
+            endpoint: "http://host:2375".into(),
+            tls_key: None,
+            tls_cert: None,
+            tls_ca: None,
+            upstream_host: "host.lan".into(),
+            webui_host: "host.lan".into(),
+            enabled: true,
+        };
+        let container = Container {
+            id: "id".into(),
+            name: "sonarr-Anime".into(),
+            image: "sonarr".into(),
+            state: "running".into(),
+            health: None,
+            server_id: server.id.clone(),
+            server_name: server.name.clone(),
+            labels: HashMap::from([("traefik.enable".into(), "true".into())]),
+            ports: vec![Port {
+                private_port: 8989,
+                public_port: Some(8990),
+                host_ip: Some("0.0.0.0".into()),
+                protocol: "tcp".into(),
+            }],
+            webui_url: None,
+        };
+        let doc = generate(
+            std::slice::from_ref(&container),
+            &[server],
+            "example.test",
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            doc["http"]["routers"]["Sonarr-Anime"]["service"],
+            "Sonarr-Anime"
+        );
+        assert_eq!(
+            doc["http"]["routers"]["Sonarr-Anime"]["rule"],
+            "Host(`sonarr-anime.example.test`)"
+        );
+        assert_eq!(route_owners(&[container], &doc)[0].0, "Sonarr-Anime");
     }
 }

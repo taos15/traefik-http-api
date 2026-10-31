@@ -1,6 +1,6 @@
 use dioxus::prelude::*;
 use serde::{Deserialize, Serialize};
-use traefik_http_api::{Container, DockerServer, ServerInput};
+use traefik_http_api::{Container, DockerServer, ServerInput, container_icon_url};
 
 #[derive(Deserialize)]
 struct ErrorMessage {
@@ -52,6 +52,9 @@ fn main() {
 fn App() -> Element {
     let mut section = use_signal(|| "servers");
     let mut revision = use_signal(|| 0_u64);
+    let mut container_filter = use_signal(|| "all");
+    let mut container_server = use_signal(|| "all".to_string());
+    let mut container_search = use_signal(String::new);
     let message = use_signal(String::new);
     let servers = use_resource(move || {
         let _ = revision();
@@ -83,9 +86,35 @@ fn App() -> Element {
                 }
             } else if section()=="containers" {
                 h2 {"Containers"}
-                button {onclick:move |_|revision+=1,"Refresh"}
                 match &*containers.read() {
-                    Some(Ok(list))=>rsx! {div {class:"grid",for container in list.iter() { ContainerCard {container:container.clone(),revision,message} }}},
+                    Some(Ok(list))=>{
+                        let non_running=list.iter().filter(|c|c.state!="running").count();
+                        let search=container_search().to_lowercase();
+                        let mut visible=list.iter().filter(|c|{
+                            (container_filter()=="all" || (container_filter()=="non-running" && c.state!="running") || (container_filter()=="running" && c.state=="running"))
+                            && (container_server()=="all" || c.server_id==container_server())
+                            && (search.is_empty() || c.name.to_lowercase().contains(&search) || c.image.to_lowercase().contains(&search))
+                        }).cloned().collect::<Vec<_>>();
+                        visible.sort_by(|a,b| (a.state=="running",a.server_name.as_str(),a.name.to_lowercase()).cmp(&(b.state=="running",b.server_name.as_str(),b.name.to_lowercase())));
+                        rsx!{
+                            p {"Stopped and created containers are available here to start. Only running containers receive Traefik routes."}
+                            div {class:"inventory-toolbar",
+                                div {class:"inventory-filters",
+                                    button {class:if container_filter()=="all"{"selected"}else{""},onclick:move |_|container_filter.set("all"),"All ({list.len()})"}
+                                    button {class:if container_filter()=="non-running"{"selected"}else{""},onclick:move |_|container_filter.set("non-running"),"Non-running ({non_running})"}
+                                    button {class:if container_filter()=="running"{"selected"}else{""},onclick:move |_|container_filter.set("running"),"Running ({list.len()-non_running})"}
+                                }
+                                label {"Docker host" select {value:"{container_server}",onchange:move |e|container_server.set(e.value()),
+                                    option {value:"all","All hosts"}
+                                    if let Some(Ok(hosts))=&*servers.read(){for host in hosts.iter(){option {value:"{host.id}","{host.name}"}}}
+                                }}
+                                label {"Search" input {r#type:"search",placeholder:"Name or image",value:"{container_search}",oninput:move |e|container_search.set(e.value())}}
+                                button {onclick:move |_|revision+=1,"Refresh"}
+                            }
+                            if visible.is_empty(){p {"No containers match these filters."}}
+                            div {class:"grid",for container in visible {ContainerCard {key:"{container.server_id}:{container.id}",container,revision,message}}}
+                        }
+                    },
                     Some(Err(e))=>rsx!{p {class:"error","{e}"}},
                     None=>rsx!{p {"Loading containers…"}}
                 }
@@ -236,21 +265,43 @@ fn EditServerForm(server: DockerServer, revision: Signal<u64>, message: Signal<S
 
 #[component]
 fn ContainerCard(container: Container, revision: Signal<u64>, message: Signal<String>) -> Element {
-    let icon = container
-        .labels
-        .get("net.unraid.docker.icon")
-        .filter(|v| v.starts_with("https://"))
-        .cloned();
+    let icon = container_icon_url(&container.labels).map(str::to_owned);
+    let fallback = if container.name.is_empty() {
+        "?".to_string()
+    } else {
+        container
+            .name
+            .chars()
+            .take(2)
+            .collect::<String>()
+            .to_uppercase()
+    };
+    let state_class = if container.state == "running" {
+        "running"
+    } else {
+        "non-running"
+    };
     let id = container.id.clone();
     let server_id = container.server_id.clone();
     let mut details = use_signal(|| None::<String>);
+    let mut published_ports = container
+        .ports
+        .iter()
+        .filter_map(|port| {
+            port.public_port
+                .map(|host| (port.private_port, host, port.protocol.clone()))
+        })
+        .collect::<Vec<_>>();
+    published_ports.sort_unstable();
+    published_ports.dedup();
     rsx! {article {class:"panel",
         if let Some(icon)=icon {img {class:"icon",src:"{icon}",alt:""}}
+        else {span {class:"icon-fallback",aria_label:"No icon available","{fallback}"}}
         h3 {"{container.name}"}
         p {"{container.image}"}
-        p {"{container.server_name} · {container.state}"}
+        p {"{container.server_name} · " span {class:"container-state {state_class}","{container.state}"}}
         if let Some(health)=container.health {p {"Health: {health}"}}
-        p {for port in container.ports.iter(){if let Some(host)=port.public_port{span {class:"port","{port.private_port} → {host}/{port.protocol} "}}}}
+        p {for (private_port,host,protocol) in published_ports {span {class:"port","{private_port} → {host}/{protocol} "}}}
         button {onclick:{let id=id.clone();let server_id=server_id.clone();move |_|{let id=id.clone();let server_id=server_id.clone();async move{
             match request::<serde_json::Value>(&format!("/api/v1/containers/{server_id}/{id}")).await{
                 Ok(value)=>details.set(Some(serde_json::to_string_pretty(&value).unwrap_or_default())),Err(e)=>message.set(e)

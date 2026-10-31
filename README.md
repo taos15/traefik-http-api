@@ -51,6 +51,12 @@ Add servers in the UI with `http://host:2375` (Docker socket proxy), `ssh://user
 
 The generator recognizes `traefik.enable=true` or `swag=enable`, `traefik.name`, `traefik.hostname`, `traefik.webuiport` (explicit published **host** port), `traefik.service.scheme`, `traefik.service`, `traefik.http.disable=true`, `traefik.middlewares`, `traefik.entrypoints`, `traefik.forwardauth=false`, and legacy `authelia_auth=false`. Only running containers get generated routers. `net.unraid.docker.webui` with `[IP]` and `[PORT:container-port]` and `traefik.webui.url` help construct browser links; `traefik.webui.host` overrides the browser host. `net.unraid.docker.icon` supplies an HTTPS icon.
 
+Without a WebUI label, a card offers a link only for one unambiguous published TCP port; common non-HTTP service ports (including database ports and the Docker API) are excluded from this fallback. Add `net.unraid.docker.webui` or `traefik.webui.url` to identify an unusual application port explicitly. Docker may report a published port twice for IPv4/IPv6; the UI displays a single mapping.
+
+The **Containers** tab includes running and non-running containers from every enabled server. Use **All**, **Non-running**, or **Running**, the Docker host selector, and name/image search to find a container; stopped or created cards have a **Start** action. Only running containers are included in Traefik's generated routes.
+
+Docker does not provide a general icon field for ordinary containers. Cards try `traefik.icon` first, then Unraid's `net.unraid.docker.icon`, then `com.docker.desktop.extension.icon` when present. These must be HTTPS image URLs. Otherwise cards show a local two-letter fallback. Add `traefik.icon=https://example.com/icon.png` to a container to supply its icon explicitly (recreate the container for a changed Docker label to take effect).
+
 ## Verify
 
 ```sh

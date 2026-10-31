@@ -2,10 +2,10 @@
 
 ## Progress (update after every verified task)
 
-- Status: first Rust implementation built and locally verified; deployment-specific remote transport and Traefik integration tests remain.
-- Last completed task: replaced tracked Node/TypeScript files, local `node_modules/`, hidden editor configuration, Docker/Compose/CI/docs with Rust equivalents; built Docker image and exercised the Dioxus UI in a browser.
-- Next task: verify SSH and mutual-TLS connections against real remote Docker hosts, test an HTTP socket proxy with its actual permissions, and poll the endpoint from a real Traefik deployment.
-- Verification: `cargo fmt --check`, `cargo test --features server` (3 passing tests), `cargo clippy --all-targets --features server -- -D warnings`, `cargo check --no-default-features --features web --target wasm32-unknown-unknown`, WebAssembly bundling, and `docker build` pass. Local Unix Docker Engine inventory, login, same-origin enforcement, server CRUD, Prisma record import, provider JSON, provider status, UI login/navigation tested. Remote SSH/TLS, arm64, and live Traefik poll unavailable in this environment.
+- Status: first Rust implementation locally verified against the user's two HTTP Docker socket proxies; SSH/TLS and live Traefik integration remain.
+- Last completed task: verified Containers tab state filters and per-host selector in browser; added a two-letter icon fallback and explicit `traefik.icon`/Docker Desktop extension icon support.
+- Next task: verify SSH and mutual-TLS connections against real remote Docker hosts, exercise an authorized container action where write permissions are available, and poll the new endpoint from a real Traefik deployment.
+- Verification: `cargo test --features server` (6 passing tests), `cargo clippy --all-targets --features server -- -D warnings`, `cargo fmt --check`, wasm build and browser UI. Isolated instance on loopback port 44001 and SQLite under `/tmp/opencode/`: two server records, 59 containers (33 Unraid + 26 PromoxLxc), inspect succeeds for both, 20 running routes/services (15 + 5). The All / Non-running / Running controls show 59 / 9 / 50; the Unraid non-running filter shows 4 Start/Inspect cards, Unraid running shows 29, and PromoxLxc running shows 21. The ProxmoxLxc cards show 20 local fallback icons and the Portainer extension label icon. With `DOMAIN=taos15.net` and `DEFAULT_AUTH_MIDDLEWARE=auth@file`, all 20 shared routes have the same upstream URLs and case-insensitive host rules as the deployed TypeScript endpoint. Six legacy-only routes belong to exited/created/restarting containers, several with invalid `:undefined` upstreams; intentionally excluded by running-only policy. Docker CLI lacks the Buildx plugin; `docker build` uses the deprecated legacy builder on this machine.
 
 ## Architecture and behavior
 
@@ -31,7 +31,8 @@
 - [x] Dioxus browser UI with server forms, edit, cards, controls, WebUI links, inspect and provider preview (browser login/navigation verified).
 - [x] Rust Docker/Compose/CI/docs; local fmt, clippy, unit and wasm checks; Docker image builds.
 - [x] Delete tracked TypeScript, Prisma, Node, React build, local `node_modules/`, hidden editor config. Existing ignored SQLite data/backups preserved.
-- [ ] Deploy against real remote SSH/TLS/HTTP socket-proxy Engines and Traefik v3; verify cross-host reachability and Docker-proxy permissions.
+- [x] Verify HTTP socket-proxy discovery against two actual remote hosts and compare the output with the deployed legacy API (read-only test; no lifecycle actions).
+- [ ] Deploy against real remote SSH/TLS Engines and Traefik v3; verify cross-host reachability and Docker-proxy write permissions where available.
 - [ ] Verify arm64 image build and deployment in CI environment with multiarch support.
 
 ## References
