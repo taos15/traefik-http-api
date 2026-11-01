@@ -388,6 +388,9 @@ mod tests {
             tls_ca: None,
             upstream_host: "192.168.1.5".into(),
             webui_host: "host.local".into(),
+            prefer_network: false,
+            docker_network: None,
+            webui_same_as_server: false,
             enabled: true,
         }
     }
@@ -404,6 +407,9 @@ mod tests {
             ports: vec![],
             networks: networks.iter().map(|s| s.to_string()).collect(),
             webui_url: None,
+            webui_url_default: None,
+            webui_url_override: None,
+            routing: None,
         }
     }
     #[test]

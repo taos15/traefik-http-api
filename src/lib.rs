@@ -12,7 +12,22 @@ pub struct DockerServer {
     pub tls_ca: Option<String>,
     pub upstream_host: String,
     pub webui_host: String,
+    #[serde(default)]
+    pub prefer_network: bool,
+    pub docker_network: Option<String>,
+    #[serde(default)]
+    pub webui_same_as_server: bool,
     pub enabled: bool,
+}
+
+impl DockerServer {
+    pub fn browser_host(&self) -> &str {
+        if self.webui_same_as_server {
+            &self.upstream_host
+        } else {
+            &self.webui_host
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -25,7 +40,18 @@ pub struct ServerInput {
     pub tls_ca: Option<String>,
     pub upstream_host: String,
     pub webui_host: String,
+    #[serde(default)]
+    pub prefer_network: bool,
+    pub docker_network: Option<String>,
+    #[serde(default)]
+    pub webui_same_as_server: bool,
     pub enabled: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ServerDiscovery {
+    pub suggested_host: Option<String>,
+    pub networks: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -34,6 +60,17 @@ pub struct Port {
     pub public_port: Option<u16>,
     pub host_ip: Option<String>,
     pub protocol: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ContainerRouting {
+    pub state: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hostname: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub checked_at: Option<i64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -49,7 +86,13 @@ pub struct Container {
     pub ports: Vec<Port>,
     #[serde(default)]
     pub networks: Vec<String>,
+    #[serde(default)]
+    pub webui_url_default: Option<String>,
+    #[serde(default)]
+    pub webui_url_override: Option<String>,
     pub webui_url: Option<String>,
+    #[serde(default)]
+    pub routing: Option<ContainerRouting>,
 }
 
 /// Docker does not define a general container icon field. Prefer an explicit
@@ -71,7 +114,7 @@ pub fn container_icon_url(labels: &std::collections::HashMap<String, String>) ->
 
 #[cfg(test)]
 mod icon_tests {
-    use super::container_icon_url;
+    use super::{DockerServer, ServerInput, container_icon_url};
     use std::collections::HashMap;
 
     #[test]
@@ -103,6 +146,48 @@ mod icon_tests {
             container_icon_url(&labels),
             Some("https://example.org/unraid.png")
         );
+    }
+
+    #[test]
+    fn legacy_server_input_json_defaults_new_preferences() {
+        let input: ServerInput = serde_json::from_value(serde_json::json!({
+            "name": "legacy",
+            "transport": "http",
+            "endpoint": "http://docker.example:2375",
+            "tls_key": null,
+            "tls_cert": null,
+            "tls_ca": null,
+            "upstream_host": "docker.example",
+            "webui_host": "docker.example",
+            "enabled": true
+        }))
+        .unwrap();
+
+        assert!(!input.prefer_network);
+        assert_eq!(input.docker_network, None);
+        assert!(!input.webui_same_as_server);
+    }
+
+    #[test]
+    fn legacy_docker_server_json_defaults_new_preferences() {
+        let server: DockerServer = serde_json::from_value(serde_json::json!({
+            "id": "legacy",
+            "name": "legacy",
+            "transport": "http",
+            "endpoint": "http://docker.example:2375",
+            "tls_key": null,
+            "tls_cert": null,
+            "tls_ca": null,
+            "upstream_host": "docker.example",
+            "webui_host": "browser.example",
+            "enabled": true
+        }))
+        .unwrap();
+
+        assert!(!server.prefer_network);
+        assert_eq!(server.docker_network, None);
+        assert!(!server.webui_same_as_server);
+        assert_eq!(server.browser_host(), "browser.example");
     }
 }
 

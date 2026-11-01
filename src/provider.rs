@@ -65,6 +65,51 @@ fn port_for(c: &Container, private: Option<u16>, published: Option<u16>) -> Opti
     }
 }
 
+fn private_port_for(c: &Container, published: u16) -> Option<u16> {
+    let mut choices = c
+        .ports
+        .iter()
+        .filter(|p| p.protocol == "tcp" && p.public_port == Some(published))
+        .map(|p| p.private_port)
+        .collect::<Vec<_>>();
+    choices.sort_unstable();
+    choices.dedup();
+    (choices.len() == 1).then(|| choices[0])
+}
+
+fn single_published_tcp_port(c: &Container) -> Option<u16> {
+    let mut choices = c
+        .ports
+        .iter()
+        .filter(|p| p.protocol == "tcp")
+        .filter_map(|p| p.public_port)
+        .collect::<Vec<_>>();
+    choices.sort_unstable();
+    choices.dedup();
+    (choices.len() == 1).then(|| choices[0])
+}
+
+fn upstream_target<'a>(
+    c: &'a Container,
+    server: &'a DockerServer,
+    explicit_port: Option<u16>,
+) -> Option<(&'a str, u16)> {
+    let use_network = server.prefer_network
+        && server
+            .docker_network
+            .as_ref()
+            .is_some_and(|network| c.networks.contains(network));
+
+    if use_network {
+        let published = explicit_port.or_else(|| single_published_tcp_port(c));
+        if let Some(private) = published.and_then(|port| private_port_for(c, port)) {
+            return Some((&c.name, private));
+        }
+    }
+
+    Some((&server.upstream_host, port_for(c, None, explicit_port)?))
+}
+
 // A single published TCP port does not imply an HTTP interface (for example,
 // Redis, PostgreSQL, and Docker socket proxies publish TCP ports too).
 fn non_web_port(port: u16) -> bool {
@@ -127,10 +172,15 @@ pub fn webui_url(c: &Container, server: &DockerServer) -> Option<String> {
         return None;
     }
     let labels = &c.labels;
+    let explicit_port = labels
+        .get("traefik.webuiport")
+        .map(|value| value.parse::<u16>())
+        .transpose()
+        .ok()?;
     let override_host = labels
         .get("traefik.webui.host")
         .map(String::as_str)
-        .unwrap_or(&server.webui_host);
+        .unwrap_or_else(|| server.browser_host());
     let label = labels
         .get("net.unraid.docker.webui")
         .or_else(|| labels.get("traefik.webui.url"));
@@ -147,7 +197,10 @@ pub fn webui_url(c: &Container, server: &DockerServer) -> Option<String> {
         if parsed.username() != "" || parsed.password().is_some() || parsed.fragment().is_some() {
             return None;
         }
-        let published = parsed.port().or_else(|| fallback_web_port(c));
+        let published = parsed
+            .port()
+            .or(explicit_port)
+            .or_else(|| fallback_web_port(c));
         if let Some(port) = published {
             port_for(c, None, Some(port))?;
         }
@@ -167,7 +220,12 @@ pub fn webui_url(c: &Container, server: &DockerServer) -> Option<String> {
         result.set_query(parsed.query());
         return Some(result.into());
     }
-    url("http", override_host, fallback_web_port(c)?, "/").ok()
+    let published = if let Some(port) = explicit_port {
+        port_for(c, None, Some(port))?
+    } else {
+        fallback_web_port(c)?
+    };
+    url("http", override_host, published, "/").ok()
 }
 
 pub struct AuthOutput<'a> {
@@ -260,7 +318,7 @@ pub fn generate(
             .get("traefik.webuiport")
             .map(|v| v.parse::<u16>())
             .transpose()?;
-        let port = port_for(c, None, explicit_port).ok_or_else(|| {
+        let (upstream_host, port) = upstream_target(c, server, explicit_port).ok_or_else(|| {
             anyhow::anyhow!("missing or ambiguous published TCP port for {}", c.name)
         })?;
         let upstream = url(
@@ -269,7 +327,7 @@ pub fn generate(
                     .map(String::as_str)
                     .unwrap_or("http"),
             )?,
-            &server.upstream_host,
+            upstream_host,
             port,
             "",
         )?;
@@ -320,20 +378,32 @@ pub fn generate(
     Ok(json!({"http":{"routers":routers,"services":services,"middlewares":auth_middlewares}}))
 }
 
-pub fn route_owners(containers: &[Container], config: &Value) -> Vec<(String, String, String)> {
+pub fn route_excluded_reason(c: &Container) -> Option<&'static str> {
+    if c.labels
+        .get("traefik.http.disable")
+        .is_some_and(|v| v.eq_ignore_ascii_case("true"))
+    {
+        return Some("Traefik routing disabled by label");
+    }
+    if !(c
+        .labels
+        .get("traefik.enable")
+        .is_some_and(|v| v.eq_ignore_ascii_case("true"))
+        || c.labels.get("swag").is_some_and(|v| v == "enable"))
+    {
+        return Some("Traefik not enabled for this container");
+    }
+    None
+}
+
+pub fn route_owners(
+    containers: &[Container],
+    config: &Value,
+) -> Vec<(String, String, String, String)> {
     containers
         .iter()
         .filter_map(|c| {
-            if c.state != "running"
-                || c.labels
-                    .get("traefik.http.disable")
-                    .is_some_and(|v| v.eq_ignore_ascii_case("true"))
-                || !(c
-                    .labels
-                    .get("traefik.enable")
-                    .is_some_and(|v| v.eq_ignore_ascii_case("true"))
-                    || c.labels.get("swag").is_some_and(|v| v == "enable"))
-            {
+            if c.state != "running" || route_excluded_reason(c).is_some() {
                 return None;
             }
             let fallback_name = default_route_name(&c.name);
@@ -350,7 +420,14 @@ pub fn route_owners(containers: &[Container], config: &Value) -> Vec<(String, St
             config["http"]["routers"]
                 .as_object()?
                 .contains_key(name)
-                .then(|| (name.to_owned(), service.to_owned(), c.server_id.clone()))
+                .then(|| {
+                    (
+                        name.to_owned(),
+                        service.to_owned(),
+                        c.server_id.clone(),
+                        c.id.clone(),
+                    )
+                })
         })
         .collect()
 }
@@ -383,6 +460,9 @@ mod tests {
             tls_ca: None,
             upstream_host: "10.0.0.1".into(),
             webui_host: "nas.lan".into(),
+            prefer_network: false,
+            docker_network: None,
+            webui_same_as_server: false,
             enabled: true,
         };
         let mut c = Container {
@@ -402,6 +482,9 @@ mod tests {
             }],
             networks: vec![],
             webui_url: None,
+            webui_url_default: None,
+            webui_url_override: None,
+            routing: None,
         };
         c.labels.insert("traefik.enable".into(), "true".into());
         c.labels.insert(
@@ -441,6 +524,9 @@ mod tests {
             tls_ca: None,
             upstream_host: "10.10.0.2".into(),
             webui_host: "docker.lan".into(),
+            prefer_network: false,
+            docker_network: None,
+            webui_same_as_server: false,
             enabled: true,
         };
         let mut c = Container {
@@ -460,6 +546,9 @@ mod tests {
             }],
             networks: vec![],
             webui_url: None,
+            webui_url_default: None,
+            webui_url_override: None,
+            routing: None,
         };
         c.labels.insert("traefik.enable".into(), "true".into());
         c.labels
@@ -502,6 +591,9 @@ mod tests {
             tls_ca: None,
             upstream_host: "example.lan".into(),
             webui_host: "example.lan".into(),
+            prefer_network: false,
+            docker_network: None,
+            webui_same_as_server: false,
             enabled: true,
         };
         let mut c = Container {
@@ -521,6 +613,9 @@ mod tests {
             }],
             networks: vec![],
             webui_url: None,
+            webui_url_default: None,
+            webui_url_override: None,
+            routing: None,
         };
         assert!(webui_url(&c, &server).is_none());
         assert!(
@@ -565,6 +660,9 @@ mod tests {
             tls_ca: None,
             upstream_host: "host.lan".into(),
             webui_host: "host.lan".into(),
+            prefer_network: false,
+            docker_network: None,
+            webui_same_as_server: false,
             enabled: true,
         };
         let mut container = Container {
@@ -584,6 +682,9 @@ mod tests {
             }],
             networks: vec![],
             webui_url: None,
+            webui_url_default: None,
+            webui_url_override: None,
+            routing: None,
         };
         assert_eq!(webui_url(&container, &server), None);
         container.ports[0].private_port = 2375;
@@ -606,6 +707,16 @@ mod tests {
     }
 
     #[test]
+    fn webui_port_override_must_match_a_published_tcp_port() {
+        let server = network_server();
+        let mut container = network_container();
+        container
+            .labels
+            .insert("traefik.webuiport".into(), "9999".into());
+        assert_eq!(webui_url(&container, &server), None);
+    }
+
+    #[test]
     fn preserves_legacy_fallback_router_name_and_service() {
         let server = DockerServer {
             id: "host".into(),
@@ -617,6 +728,9 @@ mod tests {
             tls_ca: None,
             upstream_host: "host.lan".into(),
             webui_host: "host.lan".into(),
+            prefer_network: false,
+            docker_network: None,
+            webui_same_as_server: false,
             enabled: true,
         };
         let container = Container {
@@ -636,6 +750,9 @@ mod tests {
             }],
             networks: vec![],
             webui_url: None,
+            webui_url_default: None,
+            webui_url_override: None,
+            routing: None,
         };
         let doc = generate(
             std::slice::from_ref(&container),
@@ -667,6 +784,9 @@ mod tests {
             tls_ca: None,
             upstream_host: "host.local".into(),
             webui_host: "host.local".into(),
+            prefer_network: false,
+            docker_network: None,
+            webui_same_as_server: false,
             enabled: true,
         };
         let mut c = Container {
@@ -686,6 +806,9 @@ mod tests {
             }],
             networks: vec![],
             webui_url: None,
+            webui_url_default: None,
+            webui_url_override: None,
+            routing: None,
         };
         let make = |containers: &[Container]| {
             super::generate(
@@ -724,6 +847,9 @@ mod tests {
             tls_ca: None,
             upstream_host: "host.local".into(),
             webui_host: "host.local".into(),
+            prefer_network: false,
+            docker_network: None,
+            webui_same_as_server: false,
             enabled: true,
         };
         let c = Container {
@@ -749,6 +875,9 @@ mod tests {
             }],
             networks: vec!["proxynet".into()],
             webui_url: None,
+            webui_url_default: None,
+            webui_url_override: None,
+            routing: None,
         };
         let doc = super::generate(
             &[c],
@@ -764,5 +893,170 @@ mod tests {
         )
         .unwrap();
         assert_eq!(doc["http"]["routers"]["Auth"]["middlewares"], json!([]));
+    }
+
+    fn network_server() -> DockerServer {
+        DockerServer {
+            id: "host".into(),
+            name: "host".into(),
+            transport: "unix".into(),
+            endpoint: "/var/run/docker.sock".into(),
+            tls_key: None,
+            tls_cert: None,
+            tls_ca: None,
+            upstream_host: "10.0.0.2".into(),
+            webui_host: "docker.lan".into(),
+            prefer_network: true,
+            docker_network: Some("proxy".into()),
+            webui_same_as_server: false,
+            enabled: true,
+        }
+    }
+
+    fn network_container() -> Container {
+        Container {
+            id: "app-id".into(),
+            name: "app".into(),
+            image: "app".into(),
+            state: "running".into(),
+            health: None,
+            server_id: "host".into(),
+            server_name: "host".into(),
+            labels: HashMap::from([
+                ("traefik.enable".into(), "true".into()),
+                ("traefik.webuiport".into(), "8080".into()),
+            ]),
+            ports: vec![
+                Port {
+                    private_port: 80,
+                    public_port: Some(8080),
+                    host_ip: Some("0.0.0.0".into()),
+                    protocol: "tcp".into(),
+                },
+                Port {
+                    private_port: 9000,
+                    public_port: Some(9000),
+                    host_ip: Some("0.0.0.0".into()),
+                    protocol: "tcp".into(),
+                },
+            ],
+            networks: vec!["proxy".into()],
+            webui_url: None,
+            webui_url_default: None,
+            webui_url_override: None,
+            routing: None,
+        }
+    }
+
+    #[test]
+    fn network_preference_uses_private_port_but_browser_keeps_published_port() {
+        let server = network_server();
+        let container = network_container();
+        let doc = generate(
+            std::slice::from_ref(&container),
+            std::slice::from_ref(&server),
+            "example.test",
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            doc["http"]["services"]["App"]["loadBalancer"]["servers"][0]["url"],
+            "http://app:80"
+        );
+        assert_eq!(
+            webui_url(&container, &server).as_deref(),
+            Some("http://docker.lan:8080/")
+        );
+
+        let mut inherited_server = server.clone();
+        inherited_server.webui_same_as_server = true;
+        assert_eq!(
+            webui_url(&container, &inherited_server).as_deref(),
+            Some("http://10.0.0.2:8080/")
+        );
+
+        let mut override_container = container;
+        override_container
+            .labels
+            .insert("traefik.webui.host".into(), "apps.lan".into());
+        assert_eq!(
+            webui_url(&override_container, &server).as_deref(),
+            Some("http://apps.lan:8080/")
+        );
+    }
+
+    #[test]
+    fn network_preference_falls_back_for_disabled_or_nonmember_container() {
+        let mut server = network_server();
+        let mut container = network_container();
+
+        server.prefer_network = false;
+        let doc = generate(
+            &[container.clone()],
+            &[server.clone()],
+            "example.test",
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            doc["http"]["services"]["App"]["loadBalancer"]["servers"][0]["url"],
+            "http://10.0.0.2:8080"
+        );
+
+        server.prefer_network = true;
+        container.networks.clear();
+        let doc = generate(&[container], &[server], "example.test", None).unwrap();
+        assert_eq!(
+            doc["http"]["services"]["App"]["loadBalancer"]["servers"][0]["url"],
+            "http://10.0.0.2:8080"
+        );
+    }
+
+    #[test]
+    fn network_mapping_deduplicates_bindings_and_ambiguous_private_port_falls_back() {
+        let server = network_server();
+        let mut container = network_container();
+        container.ports.push(Port {
+            host_ip: Some("::".into()),
+            ..container.ports[0].clone()
+        });
+        let doc = generate(
+            &[container.clone()],
+            std::slice::from_ref(&server),
+            "example.test",
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            doc["http"]["services"]["App"]["loadBalancer"]["servers"][0]["url"],
+            "http://app:80"
+        );
+
+        container.ports.push(Port {
+            private_port: 81,
+            public_port: Some(8080),
+            host_ip: Some("0.0.0.0".into()),
+            protocol: "tcp".into(),
+        });
+        let doc = generate(&[container], &[server], "example.test", None).unwrap();
+        assert_eq!(
+            doc["http"]["services"]["App"]["loadBalancer"]["servers"][0]["url"],
+            "http://10.0.0.2:8080"
+        );
+    }
+
+    #[test]
+    fn network_preference_uses_loopback_published_mapping_without_override() {
+        let server = network_server();
+        let mut container = network_container();
+        container.labels.remove("traefik.webuiport");
+        container.ports.truncate(1);
+        container.ports[0].host_ip = Some("127.0.0.1".into());
+
+        let doc = generate(&[container], &[server], "example.test", None).unwrap();
+        assert_eq!(
+            doc["http"]["services"]["App"]["loadBalancer"]["servers"][0]["url"],
+            "http://app:80"
+        );
     }
 }

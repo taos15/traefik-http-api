@@ -7,6 +7,22 @@ use std::collections::BTreeSet;
 use std::time::Duration;
 
 use crate::Container;
+use std::collections::HashMap;
+
+#[derive(Clone, Default, Serialize, Deserialize)]
+pub struct RuntimeRouter {
+    pub status: String,
+    pub rule: String,
+    pub service: String,
+}
+
+#[derive(Clone, Default, Serialize, Deserialize)]
+pub struct RuntimeView {
+    pub routers: HashMap<String, RuntimeRouter>,
+    pub services: HashMap<String, String>,
+    pub fetched_at: Option<i64>,
+    pub api_reachable: bool,
+}
 
 #[derive(Clone, Default, Serialize, Deserialize)]
 pub struct FileView {
@@ -475,6 +491,168 @@ pub async fn save(db: &SqlitePool, view: &FileView) -> Result<()> {
     Ok(())
 }
 
+fn server_url_canonical(url: &str) -> Option<String> {
+    let parsed = url::Url::parse(url).ok()?;
+    let host = parsed.host_str()?;
+    let authority = match parsed.port() {
+        Some(port) => format!("{host}:{port}"),
+        None => host.to_owned(),
+    };
+    Some(format!("{}://{}", parsed.scheme(), authority))
+}
+
+/// Stable fingerprint of a service's upstream servers, excluding credentials,
+/// query strings and other variable runtime data.
+pub fn service_fingerprint(service: &Value) -> Option<String> {
+    let servers = service.get("loadBalancer")?.get("servers")?.as_array()?;
+    let mut urls = Vec::new();
+    for s in servers {
+        let url = s.get("url").and_then(Value::as_str)?;
+        let canonical = server_url_canonical(url)?;
+        urls.push(canonical);
+    }
+    urls.sort_unstable();
+    urls.dedup();
+    if urls.is_empty() {
+        return None;
+    }
+    Some(urls.join(","))
+}
+
+pub fn runtime_routers(raw: &Value, time: i64) -> RuntimeView {
+    let mut routers = HashMap::new();
+    let mut services = HashMap::new();
+    let raw_services = raw.get("services").and_then(Value::as_object);
+    if let Some(map) = raw.get("routers").and_then(Value::as_object) {
+        for (full_name, value) in map {
+            if !full_name.ends_with("@http") {
+                continue;
+            }
+            let name = full_name.trim_end_matches("@http");
+            let status = value
+                .get("status")
+                .and_then(Value::as_str)
+                .unwrap_or("unknown");
+            let rule = value.get("rule").and_then(Value::as_str).unwrap_or("");
+            let service = value.get("service").and_then(Value::as_str).unwrap_or("");
+            routers.insert(
+                name.to_owned(),
+                RuntimeRouter {
+                    status: status.to_owned(),
+                    rule: rule.to_owned(),
+                    service: service.to_owned(),
+                },
+            );
+            if status == "enabled" {
+                let service_full = if service.ends_with("@http") {
+                    service.to_owned()
+                } else {
+                    format!("{service}@http")
+                };
+                let service_name = service.strip_suffix("@http").unwrap_or(service);
+                let raw_service = raw_services
+                    .and_then(|s| s.get(&service_full))
+                    .or_else(|| raw_services.and_then(|s| s.get(service_name)));
+                let service_status = raw_service
+                    .and_then(|s| s.get("status"))
+                    .and_then(Value::as_str)
+                    .unwrap_or("unknown");
+                if service_status == "enabled"
+                    && let Some(fp) = raw_service.and_then(service_fingerprint)
+                {
+                    services.insert(service_name.to_owned(), fp);
+                }
+            }
+        }
+    }
+    RuntimeView {
+        routers,
+        services,
+        fetched_at: Some(time),
+        api_reachable: true,
+    }
+}
+
+pub async fn save_runtime(db: &SqlitePool, view: &RuntimeView) -> Result<()> {
+    let mut tx = db.begin().await?;
+    sqlx::query("DELETE FROM runtime_routers")
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query("DELETE FROM runtime_services")
+        .execute(&mut *tx)
+        .await?;
+    let fetched_at = view.fetched_at.unwrap_or(0);
+    for (name, router) in &view.routers {
+        sqlx::query(
+            "INSERT INTO runtime_routers(name,status,rule,service,fetched_at) VALUES(?,?,?,?,?)",
+        )
+        .bind(name)
+        .bind(&router.status)
+        .bind(&router.rule)
+        .bind(&router.service)
+        .bind(fetched_at)
+        .execute(&mut *tx)
+        .await?;
+    }
+    for (name, fingerprint) in &view.services {
+        sqlx::query("INSERT INTO runtime_services(name,fingerprint,fetched_at) VALUES(?,?,?)")
+            .bind(name)
+            .bind(fingerprint)
+            .bind(fetched_at)
+            .execute(&mut *tx)
+            .await?;
+    }
+    sqlx::query(
+        "INSERT INTO runtime_snapshot(id,fetched_at,api_reachable) VALUES(1,?,?) ON CONFLICT(id) DO UPDATE SET fetched_at=excluded.fetched_at, api_reachable=excluded.api_reachable",
+    )
+    .bind(fetched_at)
+    .bind(view.api_reachable)
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    Ok(())
+}
+
+pub async fn load_runtime(db: &SqlitePool) -> Result<RuntimeView> {
+    let mut tx = db.begin().await?;
+    let meta: Option<(i64, i64)> =
+        sqlx::query_as("SELECT fetched_at, api_reachable FROM runtime_snapshot WHERE id=1")
+            .fetch_optional(&mut *tx)
+            .await?;
+    let (fetched_at, api_reachable) = meta.unwrap_or((0, 0));
+    let router_rows = sqlx::query("SELECT name, status, rule, service FROM runtime_routers")
+        .fetch_all(&mut *tx)
+        .await?;
+    let mut routers = HashMap::new();
+    for row in router_rows {
+        routers.insert(
+            row.get::<String, _>("name"),
+            RuntimeRouter {
+                status: row.get("status"),
+                rule: row.get("rule"),
+                service: row.get::<Option<String>, _>("service").unwrap_or_default(),
+            },
+        );
+    }
+    let service_rows = sqlx::query("SELECT name, fingerprint FROM runtime_services")
+        .fetch_all(&mut *tx)
+        .await?;
+    let mut services = HashMap::new();
+    for row in service_rows {
+        services.insert(
+            row.get::<String, _>("name"),
+            row.get::<String, _>("fingerprint"),
+        );
+    }
+    tx.commit().await?;
+    Ok(RuntimeView {
+        routers,
+        services,
+        fetched_at: (fetched_at != 0).then_some(fetched_at),
+        api_reachable: api_reachable != 0,
+    })
+}
+
 pub async fn history(db: &SqlitePool) -> Result<Vec<SnapshotInfo>> {
     let rows = sqlx::query("SELECT id,verified,created_at,redacted_paths FROM file_snapshots ORDER BY id DESC LIMIT 31").fetch_all(db).await?;
     rows.into_iter()
@@ -666,5 +844,48 @@ mod tests {
             .unwrap()
             .remove("proxy@file");
         assert!(!valid_default_auth(&normalize(&broken, 2).unwrap()));
+    }
+
+    fn runtime_raw(service_status: &str) -> Value {
+        json!({
+            "routers": {
+                "App@http": {
+                    "status": "enabled",
+                    "rule": "Host(`app.example.com`)",
+                    "service": "App@http"
+                }
+            },
+            "services": {
+                "App@http": {
+                    "status": service_status,
+                    "loadBalancer": {
+                        "servers": [{"url": "http://10.0.0.2:8080"}]
+                    }
+                }
+            }
+        })
+    }
+
+    #[test]
+    fn runtime_routers_enabled_service_fingerprints() {
+        let view = runtime_routers(&runtime_raw("enabled"), 1);
+        assert!(view.services.contains_key("App"));
+    }
+
+    #[test]
+    fn runtime_routers_disabled_service_does_not_fingerprint() {
+        let view = runtime_routers(&runtime_raw("disabled"), 1);
+        assert!(!view.services.contains_key("App"));
+    }
+
+    #[test]
+    fn runtime_routers_missing_service_status_does_not_fingerprint() {
+        let mut raw = runtime_raw("enabled");
+        raw["services"]["App@http"]
+            .as_object_mut()
+            .unwrap()
+            .remove("status");
+        let view = runtime_routers(&raw, 1);
+        assert!(!view.services.contains_key("App"));
     }
 }
