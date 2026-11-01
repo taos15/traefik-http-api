@@ -18,6 +18,76 @@ Create `data/`, set `DOMAIN`, `DATABASE_URL=sqlite://data/traefik.db`, and set a
 
 **Existing Prisma SQLite database:** back it up while the old service is stopped, then use the backup as the new `DATABASE_URL` file. Migrations create new tables alongside `containerserver`, and startup imports server IDs/names/HTTP endpoints with their former `enable` state using INSERT OR IGNORE. Inspect the imported Traefik and browser hosts; the old HTTP API host might not be reachable from either. The legacy plaintext `User` table is ignored; a new admin password is required. Keep the original backup until verified. Never overwrite the original database with an empty file.
 
+## Container images and releases
+
+Images are published to `ghcr.io/taos15/traefik-http-api` for **linux/amd64** and
+**linux/arm64** by **MultiArch Master CI**:
+
+| Trigger | Image tags | GitHub Release |
+| --- | --- | --- |
+| Push/merge into `master` | `edge`, `sha-<full-commit>` | None |
+| Push `v1.2.3` | `1.2.3`, `latest`, `sha-<full-commit>` | Generated release notes |
+| Push `v1.3.0-rc.1` | `1.3.0-rc.1`, `sha-<full-commit>` | Prerelease |
+| Pull request | Checks only | None |
+
+`edge` tracks the current successful `master` build; `latest` tracks the most
+recently published stable release. Publish stable releases in version order;
+rerunning an older stable tag also promotes that version to `latest`.
+Prereleases never update `latest`. Commit tags identify the source commit, but
+reruns can rebuild dependencies/base images; pin the image digest for immutable deployment.
+
+To release a commit already merged into `master`:
+
+```sh
+git switch master
+git pull --ff-only
+git tag v1.2.3
+git push origin v1.2.3
+```
+
+Tags must be `vMAJOR.MINOR.PATCH` with an optional SemVer prerelease suffix;
+build metadata (`+...`) is not accepted in Docker tags. A local tag does not
+trigger publishing until pushed. Push release tags with your normal Git credentials;
+tags created using a workflow's `GITHUB_TOKEN` do not trigger another workflow.
+GitHub Releases are created after image publication, so publishing a Release
+in the UI does not initiate a build. Use a new version tag for each release.
+
+The workflow runs Rust checks, builds both architectures on native runners using
+Docker's pinned reusable builder, and publishes a `build-<run-id>-<attempt>` candidate.
+Both architectures must pass container startup, database, `/api/ping`, and frontend
+asset checks before the candidate digest is promoted to public channel/version tags.
+Failures leave those tags unchanged. Candidate tags remain available for diagnostics.
+The GitHub Actions run summary includes the image digest.
+
+Manual runs are available under **Actions → MultiArch Master CI → Run workflow**;
+select `master` or an existing valid version tag. Manual runs on other branches
+are rejected. Stale master runs publish their commit tag without moving `edge`
+backwards. Release creation is idempotent and preserves existing release notes.
+
+GHCR authentication uses the repository's `GITHUB_TOKEN` with `packages: write`.
+For the existing package, verify **Package settings → Manage Actions access** grants
+this repository write access. The legacy `DOCKER_TOKEN` secret is not used.
+The first remote run must confirm package permissions and native ARM64 execution.
+
+To deploy a published image while keeping the settings, mounts, and network in
+`docker-compose.yml`, create `compose.image.yml`:
+
+```yaml
+services:
+  api:
+    image: ghcr.io/taos15/traefik-http-api:latest
+```
+
+Then run:
+
+```sh
+docker compose -f docker-compose.yml -f compose.image.yml pull
+docker compose -f docker-compose.yml -f compose.image.yml up -d --no-build
+```
+
+Use a version tag or digest instead of `latest` to pin a deployment. Review the
+database migration guidance above before upgrading from the pre-Rust app.
+
 ## Traefik setup
 
 In Traefik install configuration, enable the HTTP provider:

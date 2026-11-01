@@ -1,7 +1,16 @@
 name: Rust checks
 on:
   push:
+    branches-ignore: [master]
+    tags-ignore: ['**']
   pull_request:
+  workflow_call:
+    inputs:
+      skip-docker:
+        type: boolean
+        default: false
+permissions:
+  contents: read
 jobs:
   check:
     runs-on: ubuntu-latest
@@ -15,4 +24,5 @@ jobs:
       - run: cargo clippy --all-targets --features server -- -D warnings
       - run: cargo test --features server
       - run: cargo check --no-default-features --features web --target wasm32-unknown-unknown
-      - run: docker build .
+      - if: ${{ !inputs.skip-docker }}
+        run: docker build .

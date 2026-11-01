@@ -1,0 +1,151 @@
+name: MultiArch Master CI
+
+on:
+  push:
+    branches: [master]
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    outputs:
+      image: ${{ steps.meta.outputs.image }}
+      commit: ${{ steps.meta.outputs.commit }}
+      version: ${{ steps.meta.outputs.version }}
+      prerelease: ${{ steps.meta.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Validate publishing ref
+        id: meta
+        run: python3 .github/scripts/prepare-publish.py
+
+  checks:
+    needs: prepare
+    uses: ./.github/workflows/rust.yml
+    with:
+      skip-docker: true
+
+  build:
+    needs: [prepare, checks]
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+    uses: docker/github-builder/.github/workflows/build.yml@cbc9d42f8c89a55623392aadd03600965b80e963 # v1.18.1
+    with:
+      output: image
+      push: true
+      platforms: linux/amd64,linux/arm64
+      runner: |
+        default=ubuntu-24.04
+        linux/arm64=ubuntu-24.04-arm
+      cache: true
+      cache-mode: max
+      cache-scope: traefik-http-api
+      set-meta-labels: true
+      meta-images: ${{ needs.prepare.outputs.image }}
+      meta-flavor: latest=false
+      meta-tags: type=raw,value=build-${{ github.run_id }}-${{ github.run_attempt }}
+    secrets:
+      registry-auths: |
+        - registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+  smoke:
+    needs: [prepare, build]
+    permissions:
+      contents: read
+      packages: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            platform: linux/amd64
+          - runner: ubuntu-24.04-arm
+            platform: linux/arm64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Smoke-test candidate by digest
+        env:
+          IMAGE: ${{ needs.prepare.outputs.image }}@${{ needs.build.outputs.digest }}
+          PLATFORM: ${{ matrix.platform }}
+        run: bash .github/scripts/smoke-image.sh
+
+  publish:
+    needs: [prepare, build, smoke]
+    runs-on: ubuntu-24.04
+    # Serialize mutable tags and release creation, without cancelling releases.
+    concurrency:
+      group: multiarch-publication-${{ github.ref }}
+      cancel-in-progress: false
+    permissions:
+      contents: write
+      packages: write
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      IMAGE: ${{ needs.prepare.outputs.image }}
+      DIGEST: ${{ needs.build.outputs.digest }}
+      COMMIT: ${{ needs.prepare.outputs.commit }}
+      VERSION: ${{ needs.prepare.outputs.version }}
+      PRERELEASE: ${{ needs.prepare.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - name: Verify platforms and promote tested manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker buildx imagetools inspect "$IMAGE@$DIGEST" --raw |
+            jq -e '[.manifests[].platform | select(.os == "linux") | .architecture] | contains(["amd64", "arm64"])'
+          tags=(--tag "$IMAGE:sha-$COMMIT")
+          if [[ -n "$VERSION" ]]; then
+            tags+=(--tag "$IMAGE:$VERSION")
+            if [[ "$PRERELEASE" == false ]]; then
+              tags+=(--tag "$IMAGE:latest")
+            fi
+          else
+            # An older build finishing late must never roll edge backwards.
+            head=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/master" --jq .object.sha)
+            if [[ "$COMMIT" == "$head" ]]; then
+              tags+=(--tag "$IMAGE:edge")
+            fi
+          fi
+          docker buildx imagetools create "${tags[@]}" "$IMAGE@$DIGEST"
+          docker buildx imagetools inspect "$IMAGE:sha-$COMMIT"
+          printf 'Published image: %s@%s\n' "$IMAGE" "$DIGEST" >> "$GITHUB_STEP_SUMMARY"
+      - name: Create GitHub Release
+        if: needs.prepare.outputs.version != ''
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Successful reruns keep the existing release and its edited notes.
+          if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            exit 0
+          fi
+          flags=(--latest)
+          if [[ "$PRERELEASE" == true ]]; then
+            flags=(--prerelease --latest=false)
+          fi
+          gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
+            --verify-tag --generate-notes --title "$GITHUB_REF_NAME" \
+            --notes "Container image (linux/amd64 and linux/arm64): $IMAGE:$VERSION; digest: $DIGEST. Package: https://github.com/$GITHUB_REPOSITORY/pkgs/container/${GITHUB_REPOSITORY#*/}" \
+            "${flags[@]}"
