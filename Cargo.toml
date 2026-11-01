@@ -5,7 +5,7 @@ edition = "2024"
 
 [features]
 default = ["server"]
-server = ["dep:tokio", "dep:axum", "dep:tower-http", "dep:tower", "dep:sqlx", "dep:bollard", "dep:argon2", "dep:rand", "dep:tracing", "dep:tracing-subscriber", "dep:futures", "dep:uuid", "dep:subtle", "dep:anyhow", "dep:sha2", "dep:hex"]
+server = ["dep:tokio", "dep:axum", "dep:tower-http", "dep:tower", "dep:sqlx", "dep:bollard", "dep:argon2", "dep:rand", "dep:tracing", "dep:tracing-subscriber", "dep:futures", "dep:uuid", "dep:subtle", "dep:anyhow", "dep:sha2", "dep:hex", "dep:reqwest", "dep:serde_yaml"]
 web = ["dep:dioxus", "dep:gloo-net", "dep:web-sys"]
 
 [dependencies]
@@ -28,9 +28,11 @@ subtle = { version = "2", optional = true }
 anyhow = { version = "1", optional = true }
 sha2 = { version = "0.10", optional = true }
 hex = { version = "0.4", optional = true }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"], optional = true }
+serde_yaml = { version = "0.9", optional = true }
 dioxus = { version = "0.7.10", default-features = false, features = ["web", "router", "lib", "launch"], optional = true }
 gloo-net = { version = "0.6", features = ["json"], optional = true }
-web-sys = { version = "0.3", features = ["Window", "Location"], optional = true }
+web-sys = { version = "0.3", features = ["Window", "Location", "Navigator", "Clipboard"], optional = true }
 
 [[bin]]
 name = "traefik-server"

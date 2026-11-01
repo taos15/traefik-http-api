@@ -47,6 +47,8 @@ pub struct Container {
     pub server_name: String,
     pub labels: std::collections::HashMap<String, String>,
     pub ports: Vec<Port>,
+    #[serde(default)]
+    pub networks: Vec<String>,
     pub webui_url: Option<String>,
 }
 
@@ -105,6 +107,10 @@ mod icon_tests {
 }
 
 #[cfg(feature = "server")]
+pub mod auth;
+#[cfg(feature = "server")]
 pub mod docker;
 #[cfg(feature = "server")]
 pub mod provider;
+#[cfg(feature = "server")]
+pub mod traefik;

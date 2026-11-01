@@ -1,0 +1,1 @@
+ALTER TABLE auth_selection ADD COLUMN file_owned INTEGER NOT NULL DEFAULT 0;

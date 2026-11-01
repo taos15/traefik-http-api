@@ -170,22 +170,52 @@ pub fn webui_url(c: &Container, server: &DockerServer) -> Option<String> {
     url("http", override_host, fallback_web_port(c)?, "/").ok()
 }
 
+pub struct AuthOutput<'a> {
+    pub reference: Option<&'a str>,
+    pub required: bool,
+    pub containers: HashSet<(String, String)>,
+    pub middlewares: serde_json::Map<String, Value>,
+    pub services: serde_json::Map<String, Value>,
+}
+
+impl<'a> AuthOutput<'a> {
+    pub fn from_reference(reference: Option<&'a str>) -> Self {
+        Self {
+            reference,
+            required: false,
+            containers: HashSet::new(),
+            middlewares: Default::default(),
+            services: Default::default(),
+        }
+    }
+}
+
 pub fn generate(
     containers: &[Container],
     servers: &[DockerServer],
     domain: &str,
-    default_auth: Option<&str>,
+    auth: AuthOutput<'_>,
 ) -> anyhow::Result<Value> {
+    let AuthOutput {
+        reference: default_auth,
+        required: auth_required,
+        containers: auth_containers,
+        middlewares: auth_middlewares,
+        services: auth_services,
+    } = auth;
     let mut routers = serde_json::Map::new();
-    let mut services = serde_json::Map::new();
+    let mut services = auth_services;
     let mut rules = HashSet::new();
     let server_index: HashMap<_, _> = servers.iter().map(|s| (s.id.as_str(), s)).collect();
     for c in containers {
         let l = &c.labels;
         if c.state != "running"
-            || !(l.get("traefik.enable").is_some_and(|v| v == "true")
+            || !(l
+                .get("traefik.enable")
+                .is_some_and(|v| v.eq_ignore_ascii_case("true"))
                 || l.get("swag").is_some_and(|v| v == "enable"))
-            || l.get("traefik.http.disable").is_some_and(|v| v == "true")
+            || l.get("traefik.http.disable")
+                .is_some_and(|v| v.eq_ignore_ascii_case("true"))
         {
             continue;
         }
@@ -221,10 +251,10 @@ pub fn generate(
             "invalid Host rule: {rule_host}"
         );
         anyhow::ensure!(
-            rules.insert(rule_host.clone())
-                && !routers.contains_key(name)
-                && !services.contains_key(service),
-            "duplicate router, service, or host: {name}"
+            !routers.contains_key(name)
+                && !services.contains_key(service)
+                && !auth_middlewares.contains_key(name),
+            "duplicate router, service, or middleware: {name}"
         );
         let explicit_port = l
             .get("traefik.webuiport")
@@ -243,21 +273,35 @@ pub fn generate(
             port,
             "",
         )?;
-        let middleware = if let Some(list) = l.get("traefik.middlewares") {
+        let is_auth_container = auth_containers.contains(&(c.server_id.clone(), c.id.clone()));
+        let opted_out = l
+            .get("traefik.forwardauth")
+            .or_else(|| l.get("authelia_auth"))
+            .is_some_and(|v| v.eq_ignore_ascii_case("false"));
+        let middleware = if is_auth_container {
+            vec![]
+        } else if let Some(list) = l.get("traefik.middlewares") {
             list.split(',')
                 .map(str::trim)
                 .filter(|s| !s.is_empty())
                 .collect::<Vec<_>>()
-        } else if l
-            .get("traefik.forwardauth")
-            .map(String::as_str)
-            .or_else(|| l.get("authelia_auth").map(String::as_str))
-            == Some("false")
-        {
+        } else if opted_out {
             vec![]
         } else {
             default_auth.into_iter().collect()
         };
+        if middleware.is_empty()
+            && auth_required
+            && !is_auth_container
+            && !l.contains_key("traefik.middlewares")
+            && !opted_out
+        {
+            continue;
+        }
+        anyhow::ensure!(
+            rules.insert(rule_host.clone()),
+            "duplicate host: {rule_host}"
+        );
         let entrypoints = l
             .get("traefik.entrypoints")
             .map(|v| {
@@ -273,7 +317,7 @@ pub fn generate(
             json!({"loadBalancer":{"servers":[{"url":upstream}]}}),
         );
     }
-    Ok(json!({"http":{"routers":routers,"services":services}}))
+    Ok(json!({"http":{"routers":routers,"services":services,"middlewares":auth_middlewares}}))
 }
 
 pub fn route_owners(containers: &[Container], config: &Value) -> Vec<(String, String, String)> {
@@ -283,8 +327,11 @@ pub fn route_owners(containers: &[Container], config: &Value) -> Vec<(String, St
             if c.state != "running"
                 || c.labels
                     .get("traefik.http.disable")
-                    .is_some_and(|v| v == "true")
-                || !(c.labels.get("traefik.enable").is_some_and(|v| v == "true")
+                    .is_some_and(|v| v.eq_ignore_ascii_case("true"))
+                || !(c
+                    .labels
+                    .get("traefik.enable")
+                    .is_some_and(|v| v.eq_ignore_ascii_case("true"))
                     || c.labels.get("swag").is_some_and(|v| v == "enable"))
             {
                 return None;
@@ -311,6 +358,19 @@ pub fn route_owners(containers: &[Container], config: &Value) -> Vec<(String, St
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn generate(
+        containers: &[Container],
+        servers: &[DockerServer],
+        domain: &str,
+        auth: Option<&str>,
+    ) -> anyhow::Result<Value> {
+        super::generate(
+            containers,
+            servers,
+            domain,
+            AuthOutput::from_reference(auth),
+        )
+    }
     #[test]
     fn maps_unraid_port_and_keeps_api_separate() {
         let server = DockerServer {
@@ -340,6 +400,7 @@ mod tests {
                 host_ip: Some("0.0.0.0".into()),
                 protocol: "tcp".into(),
             }],
+            networks: vec![],
             webui_url: None,
         };
         c.labels.insert("traefik.enable".into(), "true".into());
@@ -397,6 +458,7 @@ mod tests {
                 host_ip: Some("0.0.0.0".into()),
                 protocol: "tcp".into(),
             }],
+            networks: vec![],
             webui_url: None,
         };
         c.labels.insert("traefik.enable".into(), "true".into());
@@ -457,6 +519,7 @@ mod tests {
                 host_ip: Some("127.0.0.1".into()),
                 protocol: "tcp".into(),
             }],
+            networks: vec![],
             webui_url: None,
         };
         assert!(webui_url(&c, &server).is_none());
@@ -519,6 +582,7 @@ mod tests {
                 host_ip: Some("0.0.0.0".into()),
                 protocol: "tcp".into(),
             }],
+            networks: vec![],
             webui_url: None,
         };
         assert_eq!(webui_url(&container, &server), None);
@@ -570,6 +634,7 @@ mod tests {
                 host_ip: Some("0.0.0.0".into()),
                 protocol: "tcp".into(),
             }],
+            networks: vec![],
             webui_url: None,
         };
         let doc = generate(
@@ -588,5 +653,116 @@ mod tests {
             "Host(`sonarr-anime.example.test`)"
         );
         assert_eq!(route_owners(&[container], &doc)[0].0, "Sonarr-Anime");
+    }
+
+    #[test]
+    fn protected_route_is_omitted_when_auth_is_missing_but_opt_out_remains() {
+        let server = DockerServer {
+            id: "host".into(),
+            name: "host".into(),
+            transport: "http".into(),
+            endpoint: "http://host:2375".into(),
+            tls_key: None,
+            tls_cert: None,
+            tls_ca: None,
+            upstream_host: "host.local".into(),
+            webui_host: "host.local".into(),
+            enabled: true,
+        };
+        let mut c = Container {
+            id: "a".into(),
+            name: "app".into(),
+            image: "app".into(),
+            state: "running".into(),
+            health: None,
+            server_id: "host".into(),
+            server_name: "host".into(),
+            labels: HashMap::from([("traefik.enable".into(), "TRUE".into())]),
+            ports: vec![Port {
+                private_port: 80,
+                public_port: Some(8080),
+                host_ip: Some("0.0.0.0".into()),
+                protocol: "tcp".into(),
+            }],
+            networks: vec![],
+            webui_url: None,
+        };
+        let make = |containers: &[Container]| {
+            super::generate(
+                containers,
+                std::slice::from_ref(&server),
+                "example.com",
+                AuthOutput {
+                    reference: None,
+                    required: true,
+                    containers: HashSet::new(),
+                    middlewares: Default::default(),
+                    services: Default::default(),
+                },
+            )
+            .unwrap()
+        };
+        assert!(
+            make(std::slice::from_ref(&c))["http"]["routers"]
+                .as_object()
+                .unwrap()
+                .is_empty()
+        );
+        c.labels
+            .insert("traefik.forwardauth".into(), "FALSE".into());
+        assert!(make(&[c])["http"]["routers"].get("App").is_some());
+    }
+    #[test]
+    fn auth_container_does_not_receive_its_own_default_even_with_explicit_label() {
+        let server = DockerServer {
+            id: "host".into(),
+            name: "host".into(),
+            transport: "http".into(),
+            endpoint: "http://host:2375".into(),
+            tls_key: None,
+            tls_cert: None,
+            tls_ca: None,
+            upstream_host: "host.local".into(),
+            webui_host: "host.local".into(),
+            enabled: true,
+        };
+        let c = Container {
+            id: "auth".into(),
+            name: "auth".into(),
+            image: "authelia/authelia".into(),
+            state: "running".into(),
+            health: None,
+            server_id: "host".into(),
+            server_name: "host".into(),
+            labels: HashMap::from([
+                ("traefik.enable".into(), "true".into()),
+                (
+                    "traefik.middlewares".into(),
+                    "default-forward-auth@file".into(),
+                ),
+            ]),
+            ports: vec![Port {
+                private_port: 9091,
+                public_port: Some(9091),
+                host_ip: Some("0.0.0.0".into()),
+                protocol: "tcp".into(),
+            }],
+            networks: vec!["proxynet".into()],
+            webui_url: None,
+        };
+        let doc = super::generate(
+            &[c],
+            &[server],
+            "example.test",
+            AuthOutput {
+                reference: Some("default-forward-auth@file"),
+                required: true,
+                containers: HashSet::from([("host".into(), "auth".into())]),
+                middlewares: Default::default(),
+                services: Default::default(),
+            },
+        )
+        .unwrap();
+        assert_eq!(doc["http"]["routers"]["Auth"]["middlewares"], json!([]));
     }
 }

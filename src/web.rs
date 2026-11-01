@@ -1,5 +1,5 @@
 use dioxus::prelude::*;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use traefik_http_api::{Container, DockerServer, ServerInput, container_icon_url};
 
 #[derive(Deserialize)]
@@ -121,31 +121,145 @@ fn App() -> Element {
             } else {
                 h2 {"Traefik provider"}
                 p {"Traefik polls /api/v1/traefikconfig. The endpoint is anonymous unless a provider token is configured."}
-                ProviderStatus {}
+                ProviderStatus {revision,message}
                 ProviderPreview {}
             }
         }
     }
 }
 
-#[derive(Serialize, Deserialize, Clone)]
+#[derive(Deserialize, Clone)]
 struct Status {
     refreshed_at: Option<i64>,
-    default_auth_enabled: bool,
+    auth: Option<AuthStatus>,
+    api_error: Option<String>,
     last_error: Option<String>,
+    route_warnings: Vec<String>,
+}
+#[derive(Deserialize, Clone)]
+struct AuthStatus {
+    reference: Option<String>,
+    note: String,
+    candidates: Vec<AuthCandidate>,
+    protected: bool,
+    api_reachable: bool,
+    credentials_configured: bool,
+}
+#[derive(Deserialize, Clone)]
+struct AuthCandidate {
+    provider: String,
+    container_id: String,
+    server_id: String,
+    name: String,
+    eligible: bool,
+    published_url: Option<String>,
+}
+#[derive(Deserialize, Clone)]
+struct SnapshotInfo {
+    id: i64,
+    verified: bool,
+    created_at: i64,
+    redacted_count: usize,
+}
+#[derive(Deserialize)]
+struct Snippet {
+    yaml: String,
+    warnings: Vec<String>,
 }
 #[component]
-fn ProviderStatus() -> Element {
-    let status = use_resource(|| async { request::<Status>("/api/v1/provider/status").await });
-    rsx! {match &*status.read(){
-        Some(Ok(s))=>rsx!{ p {"Last successful refresh (Unix time): {s.refreshed_at:?}"}
-            p {"Default ForwardAuth configured: {s.default_auth_enabled}"}
-            if !s.default_auth_enabled {p {class:"error","Automatic ForwardAuth is OFF. Generated routes are not protected by this app."}}
-            if let Some(error)=&s.last_error {p {class:"error","Last refresh failed: {error}. Serving last good snapshot."}}
-        },
-        Some(Err(e))=>rsx!{p {class:"error","{e}"}},
-        None=>rsx!{p {"Loading status…"}}
-    }}
+fn ProviderStatus(revision: Signal<u64>, message: Signal<String>) -> Element {
+    let status = use_resource(move || {
+        let _ = revision();
+        async { request::<Status>("/api/v1/provider/status").await }
+    });
+    let snapshots = use_resource(move || {
+        let _ = revision();
+        async { request::<Vec<SnapshotInfo>>("/api/v1/provider/files").await }
+    });
+    let mut snippet = use_signal(String::new);
+    rsx! {
+        match &*status.read() {
+            Some(Ok(s)) => rsx! {
+                p { "Last successful refresh (Unix time): {s.refreshed_at:?}" }
+                if let Some(a) = &s.auth {
+                    p { "Traefik API reachable: {a.api_reachable} · credentials configured: {a.credentials_configured}" }
+                    p { "Auth: {a.note}" }
+                    if a.reference.is_none() {
+                        p { class: "error", if a.protected { "Required auth unavailable: protected routes are omitted." } else { "Automatic ForwardAuth off; routes without explicit middleware are unprotected." } }
+                    }
+                    button {
+                        onclick: move |_| async move {
+                            match mutate("POST", "/api/v1/provider/auth/reset", None).await {
+                                Ok(()) => { message.set("Auth selection reset".into()); revision += 1; },
+                                Err(e) => message.set(e),
+                            }
+                        },
+                        "Reset automatic auth selection"
+                    }
+                    h3 { "Detected auth containers" }
+                    for c in &a.candidates {
+                        article { class: "panel",
+                            p { "{c.provider}: {c.name} · " if c.eligible { "On Traefik's network" } else { "On another Docker network/host" } }
+                            if !c.eligible && a.reference.as_deref() != Some("default-forward-auth@file") {
+                                if c.published_url.is_some() {
+                                    button {
+                                        onclick: {
+                                            let server = c.server_id.clone();
+                                            let id = c.container_id.clone();
+                                            move |_| {
+                                                let server = server.clone();
+                                                let id = id.clone();
+                                                async move {
+                                                    let path = format!("/api/v1/provider/auth/snippet?server_id={server}&container_id={id}");
+                                                    match request::<Snippet>(&path).await {
+                                                        Ok(v) => snippet.set(format!("{}\n{}", v.warnings.join("\n"), v.yaml)),
+                                                        Err(e) => message.set(e),
+                                                    }
+                                                }
+                                            }
+                                        },
+                                        "Generate @file snippet"
+                                    }
+                                } else {
+                                    p { "Publish the auth container port to a Traefik-reachable host or define its address in a Traefik file." }
+                                }
+                            }
+                        }
+                    }
+                    if !snippet().is_empty() {
+                        details { open: true, summary { "Snippet — copy into your Traefik dynamic directory" }
+                            button { onclick: move |_| {if let Some(window)=web_sys::window(){let _=window.navigator().clipboard().write_text(&snippet());}}, "Copy snippet" }
+                            a { href:"data:application/yaml,{url::form_urlencoded::byte_serialize(snippet().as_bytes()).collect::<String>()}",download:"default-forward-auth.yml","Download snippet" }
+                            pre { "{snippet}" }
+                        }
+                    }
+                } else {
+                    p { "Waiting for first inventory refresh…" }
+                }
+                if let Some(error) = &s.api_error { p { class: "error", "Traefik API: {error}" } }
+                if let Some(error) = &s.last_error { p { class: "error", "Last refresh failed: {error}. Serving last good snapshot." } }
+                if !s.route_warnings.is_empty() {details {summary {"Route warnings ({s.route_warnings.len()})"} for warning in &s.route_warnings {p {class:"error","{warning}"}}}}
+            },
+            Some(Err(e)) => rsx! { p { class: "error", "{e}" } },
+            None => rsx! { p { "Loading status…" } },
+        }
+        h3 { "File-provider snapshots" }
+        p { "Effective config only; generated YAML is redacted and may need manual repair before use." }
+        match &*snapshots.read() {
+            Some(Ok(list)) => rsx! {
+                div { class: "panel",
+                    a { href: "/api/v1/provider/files/export", download: "traefik-file-snapshot.yml", "Generate config (latest verified)" }
+                    for s in list {
+                        p { "Snapshot #{s.id} · time {s.created_at} · verified: {s.verified} · redacted fields: {s.redacted_count} "
+                            a { href: "/api/v1/provider/files/export?id={s.id}", download: "traefik-file-snapshot.yml", "Download" }
+                        }
+                    }
+                }
+            },
+            Some(Err(e)) => rsx! { p { class: "error", "{e}" } },
+            None => rsx! { p { "Loading file snapshots…" } },
+        }
+    }
 }
 
 #[component]

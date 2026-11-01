@@ -3,6 +3,7 @@ RUN rustup target add wasm32-unknown-unknown && cargo install wasm-bindgen-cli -
 WORKDIR /app
 COPY Cargo.toml Cargo.lock ./
 COPY migrations ./migrations
+COPY templates ./templates
 COPY src ./src
 COPY web ./web
 RUN cargo build --release --no-default-features --features web --target wasm32-unknown-unknown && \

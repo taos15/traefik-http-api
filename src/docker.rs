@@ -82,6 +82,11 @@ pub async fn list(server: DockerServer) -> anyhow::Result<Vec<Container>> {
                 server_name: server.name.clone(),
                 labels: entry.labels.unwrap_or_default(),
                 ports,
+                networks: entry
+                    .network_settings
+                    .and_then(|n| n.networks)
+                    .map(|n| n.into_keys().collect())
+                    .unwrap_or_default(),
                 webui_url: None,
             }
         })

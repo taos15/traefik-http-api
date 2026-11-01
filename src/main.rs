@@ -9,7 +9,7 @@ use anyhow::Context;
 use argon2::{Argon2, PasswordHash, PasswordHasher, PasswordVerifier, password_hash::SaltString};
 use axum::{
     Json, Router,
-    extract::{Path, Request, State},
+    extract::{Path, Query, Request, State},
     http::{HeaderMap, StatusCode, header},
     response::{IntoResponse, Response},
     routing::{get, post},
@@ -24,12 +24,14 @@ use sqlx::{
 use tokio::sync::{Mutex, RwLock, watch};
 use tower::ServiceExt;
 use tower_http::{services::ServeDir, trace::TraceLayer};
-use traefik_http_api::{Container, DockerServer, ServerInput, docker, provider};
+use traefik_http_api::{Container, DockerServer, ServerInput, auth, docker, provider, traefik};
 
 #[derive(Clone)]
 struct Settings {
     domain: String,
-    default_auth: Option<String>,
+    traefik_api_url: Option<String>,
+    traefik_api_username: Option<String>,
+    traefik_api_password: Option<String>,
     provider_token: Option<String>,
     database_url: String,
 }
@@ -41,6 +43,9 @@ struct AppState {
     refresh: Arc<Mutex<()>>,
     trigger: watch::Sender<u64>,
     last_error: Arc<RwLock<Option<String>>>,
+    api_error: Arc<RwLock<Option<String>>>,
+    auth_status: Arc<RwLock<Option<AuthStatus>>>,
+    route_warnings: Arc<RwLock<Vec<String>>>,
 }
 
 struct ApiError(StatusCode, String);
@@ -70,15 +75,29 @@ fn now() -> i64 {
 fn settings() -> anyhow::Result<Settings> {
     let domain = env::var("DOMAIN").context("DOMAIN is required")?;
     anyhow::ensure!(!domain.is_empty(), "DOMAIN must not be empty");
-    let default_auth = env::var("DEFAULT_AUTH_MIDDLEWARE")
-        .ok()
-        .filter(|s| !s.trim().is_empty());
+    let traefik_api_password = if let Ok(path) = env::var("TRAEFIK_API_PASSWORD_FILE")
+        && !path.is_empty()
+    {
+        Some(
+            std::fs::read_to_string(path)?
+                .trim_end_matches(['\r', '\n'])
+                .to_owned(),
+        )
+    } else {
+        env::var("TRAEFIK_API_PASSWORD")
+            .ok()
+            .filter(|s| !s.is_empty())
+    };
     let provider_token = env::var("PROVIDER_TOKEN").ok().filter(|s| !s.is_empty());
     let database_url =
         env::var("DATABASE_URL").unwrap_or_else(|_| "sqlite://data/traefik.db".into());
     Ok(Settings {
         domain,
-        default_auth,
+        traefik_api_url: env::var("TRAEFIK_API_URL").ok().filter(|s| !s.is_empty()),
+        traefik_api_username: env::var("TRAEFIK_API_USERNAME")
+            .ok()
+            .filter(|s| !s.is_empty()),
+        traefik_api_password,
         provider_token,
         database_url,
     })
@@ -554,12 +573,75 @@ async fn refresh(s: &AppState) -> anyhow::Result<()> {
     let _lock = s.refresh.lock().await;
     let srv = servers(&s.db).await?;
     let containers = docker::aggregate(srv.clone()).await?;
+    let previous = auth_selection(&s.db).await?;
+    let api_url = traefik::candidate_url(&containers, s.settings.traefik_api_url.as_deref());
+    let api_result = match api_url {
+        Ok(url) => {
+            traefik::fetch(
+                &url,
+                s.settings.traefik_api_username.as_deref(),
+                s.settings.traefik_api_password.as_deref(),
+            )
+            .await
+        }
+        Err(error) => Err(error),
+    };
+    let view = match api_result {
+        Ok(raw) => {
+            let view = match traefik::normalize(&raw, now()) {
+                Ok(view) => view,
+                Err(error) => {
+                    *s.api_error.write().await = Some(error.to_string());
+                    anyhow::bail!(
+                        "Traefik API payload unavailable; retaining last published document: {error}"
+                    )
+                }
+            };
+            traefik::save(&s.db, &view).await?;
+            *s.api_error.write().await = None;
+            view
+        }
+        Err(error) => {
+            *s.api_error.write().await = Some(error.to_string());
+            // A fresh installation with no configured auth and no auth provider
+            // can still serve routes without requiring Traefik's optional API.
+            // Once auth has been active, an API outage must never change its
+            // provider or remove its middleware reference.
+            if previous.protected || traefik::latest(&s.db).await?.is_some() {
+                anyhow::bail!(
+                    "Traefik API unavailable; retaining last published document: {error}"
+                );
+            }
+            let candidates = auth::candidates(&containers, &srv)?;
+            if candidates.iter().any(|c| c.eligible) {
+                anyhow::bail!(
+                    "Traefik API unavailable with detected auth containers; cannot determine file override: {error}"
+                );
+            }
+            traefik::FileView::default()
+        }
+    };
+    // An unreadable API cannot establish that a file middleware disappeared.
+    // Preserve the last published document, including its auth references.
+    let decision = auth::choose(&containers, &srv, Some(&view), &previous)?;
     let config = provider::generate(
         &containers,
         &srv,
         &s.settings.domain,
-        s.settings.default_auth.as_deref(),
+        provider::AuthOutput {
+            reference: decision.reference.as_deref(),
+            required: decision.required,
+            containers: decision
+                .candidates
+                .iter()
+                .map(|c| (c.server_id.clone(), c.container_id.clone()))
+                .collect(),
+            middlewares: decision.middlewares.clone(),
+            services: decision.services.clone(),
+        },
     )?;
+    let warnings =
+        traefik::route_warnings(&config, s.api_error.read().await.is_none().then_some(&view));
     let mut tx = s.db.begin().await?;
     sqlx::query("INSERT INTO provider_snapshot(id,config,refreshed_at) VALUES(1,?,?) ON CONFLICT(id) DO UPDATE SET config=excluded.config,refreshed_at=excluded.refreshed_at")
         .bind(config.to_string()).bind(now()).execute(&mut *tx).await?;
@@ -576,7 +658,18 @@ async fn refresh(s: &AppState) -> anyhow::Result<()> {
         .execute(&mut *tx)
         .await?;
     }
+    sqlx::query("INSERT INTO auth_selection(id,provider,container_id,server_id,network,dns_name,protected,file_owned,last_reference) VALUES(1,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET provider=excluded.provider,container_id=excluded.container_id,server_id=excluded.server_id,network=excluded.network,dns_name=excluded.dns_name,protected=excluded.protected,file_owned=excluded.file_owned,last_reference=excluded.last_reference")
+        .bind(&decision.selection.provider).bind(&decision.selection.container_id).bind(&decision.selection.server_id).bind(&decision.selection.network).bind(&decision.selection.dns_name).bind(decision.selection.protected).bind(decision.selection.file_owned).bind(&decision.selection.last_reference).execute(&mut *tx).await?;
     tx.commit().await?;
+    *s.auth_status.write().await = Some(AuthStatus {
+        reference: decision.reference,
+        note: decision.note,
+        candidates: decision.candidates,
+        protected: decision.selection.protected,
+        api_reachable: s.api_error.read().await.is_none(),
+        credentials_configured: s.settings.traefik_api_username.is_some(),
+    });
+    *s.route_warnings.write().await = warnings;
     *s.last_error.write().await = None;
     Ok(())
 }
@@ -630,8 +723,34 @@ async fn provider_preview(
 #[derive(Serialize)]
 struct Status {
     refreshed_at: Option<i64>,
-    default_auth_enabled: bool,
+    auth: Option<AuthStatus>,
+    api_error: Option<String>,
     last_error: Option<String>,
+    route_warnings: Vec<String>,
+}
+#[derive(Clone, Serialize)]
+struct AuthStatus {
+    reference: Option<String>,
+    note: String,
+    candidates: Vec<auth::Candidate>,
+    protected: bool,
+    api_reachable: bool,
+    credentials_configured: bool,
+}
+async fn auth_selection(db: &SqlitePool) -> anyhow::Result<auth::Selection> {
+    let row=sqlx::query("SELECT provider,container_id,server_id,network,dns_name,protected,file_owned,last_reference FROM auth_selection WHERE id=1").fetch_optional(db).await?;
+    Ok(row
+        .map(|r| auth::Selection {
+            provider: r.get("provider"),
+            container_id: r.get("container_id"),
+            server_id: r.get("server_id"),
+            network: r.get("network"),
+            dns_name: r.get("dns_name"),
+            protected: r.get::<i64, _>("protected") != 0,
+            file_owned: r.get::<i64, _>("file_owned") != 0,
+            last_reference: r.get("last_reference"),
+        })
+        .unwrap_or_default())
 }
 async fn provider_status(State(s): State<AppState>, headers: HeaderMap) -> ApiResult<Json<Status>> {
     require_login(&s, &headers).await?;
@@ -640,11 +759,106 @@ async fn provider_status(State(s): State<AppState>, headers: HeaderMap) -> ApiRe
             .fetch_optional(&s.db)
             .await
             .map_err(internal)?;
+    let api_error = s.api_error.read().await.clone();
+    let mut auth = s.auth_status.read().await.clone();
+    if let Some(status) = auth.as_mut() {
+        status.api_reachable = api_error.is_none();
+    }
+    if auth.is_none() {
+        let selection = auth_selection(&s.db).await.map_err(internal)?;
+        auth = Some(AuthStatus {
+            reference: selection.last_reference,
+            note: "Waiting for first refresh; saved auth intent is retained".into(),
+            candidates: vec![],
+            protected: selection.protected,
+            api_reachable: api_error.is_none(),
+            credentials_configured: s.settings.traefik_api_username.is_some(),
+        });
+    }
     Ok(Json(Status {
         refreshed_at: row.map(|r| r.0),
-        default_auth_enabled: s.settings.default_auth.is_some(),
+        auth,
+        api_error,
         last_error: s.last_error.read().await.clone(),
+        route_warnings: s.route_warnings.read().await.clone(),
     }))
+}
+
+async fn reset_auth(State(s): State<AppState>, headers: HeaderMap) -> ApiResult<StatusCode> {
+    require_login(&s, &headers).await?;
+    require_same_origin(&headers)?;
+    // Reset the selected identity without dropping the already-established
+    // protection requirement. A stopped auth service must never become open.
+    sqlx::query("UPDATE auth_selection SET provider=NULL,container_id=NULL,server_id=NULL,network=NULL,dns_name=NULL,file_owned=0,last_reference=NULL WHERE id=1")
+        .execute(&s.db).await.map_err(internal)?;
+    trigger(&s);
+    Ok(StatusCode::NO_CONTENT)
+}
+async fn file_history(
+    State(s): State<AppState>,
+    headers: HeaderMap,
+) -> ApiResult<Json<Vec<traefik::SnapshotInfo>>> {
+    require_login(&s, &headers).await?;
+    Ok(Json(traefik::history(&s.db).await.map_err(internal)?))
+}
+#[derive(Deserialize)]
+struct ExportQuery {
+    id: Option<i64>,
+}
+async fn export_files(
+    State(s): State<AppState>,
+    headers: HeaderMap,
+    Query(query): Query<ExportQuery>,
+) -> ApiResult<Response> {
+    require_login(&s, &headers).await?;
+    let content = traefik::export(&s.db, query.id)
+        .await
+        .map_err(|e| ApiError(StatusCode::NOT_FOUND, e.to_string()))?;
+    Ok((
+        [
+            (header::CONTENT_TYPE, "application/yaml"),
+            (
+                header::CONTENT_DISPOSITION,
+                "attachment; filename=traefik-file-snapshot.yml",
+            ),
+        ],
+        content,
+    )
+        .into_response())
+}
+#[derive(Deserialize)]
+struct SnippetQuery {
+    server_id: String,
+    container_id: String,
+}
+async fn auth_snippet(
+    State(s): State<AppState>,
+    headers: HeaderMap,
+    Query(q): Query<SnippetQuery>,
+) -> ApiResult<Json<serde_json::Value>> {
+    require_login(&s, &headers).await?;
+    let srv = servers(&s.db).await.map_err(internal)?;
+    let all = docker::aggregate(srv.clone()).await.map_err(internal)?;
+    let candidates = auth::candidates(&all, &srv).map_err(bad)?;
+    let c = candidates
+        .iter()
+        .find(|v| v.server_id == q.server_id && v.container_id == q.container_id && !v.eligible)
+        .ok_or_else(|| {
+            ApiError(
+                StatusCode::NOT_FOUND,
+                "remote auth container not found".into(),
+            )
+        })?;
+    let names = traefik::latest(&s.db)
+        .await
+        .map_err(internal)?
+        .map(|v| traefik::file_resources(&v))
+        .unwrap_or_default();
+    if names.contains("middlewares:default-forward-auth@file") {
+        return Err(bad("default-forward-auth@file already exists"));
+    }
+    let (yaml, warnings) = auth::snippet(c, &names).map_err(bad)?;
+    Ok(Json(serde_json::json!({"yaml":yaml,"warnings":warnings})))
 }
 
 async fn protected_web(State(s): State<AppState>, request: Request) -> Response {
@@ -779,6 +993,9 @@ async fn main() -> anyhow::Result<()> {
         refresh: Arc::new(Mutex::new(())),
         trigger: tx,
         last_error: Arc::new(RwLock::new(None)),
+        api_error: Arc::new(RwLock::new(None)),
+        auth_status: Arc::new(RwLock::new(None)),
+        route_warnings: Arc::new(RwLock::new(Vec::new())),
     };
     reconcile_snapshot(&state).await?;
     let worker = state.clone();
@@ -797,6 +1014,10 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/v1/traefikconfig", get(provider_config))
         .route("/api/v1/provider/preview", get(provider_preview))
         .route("/api/v1/provider/status", get(provider_status))
+        .route("/api/v1/provider/auth/reset", post(reset_auth))
+        .route("/api/v1/provider/files", get(file_history))
+        .route("/api/v1/provider/files/export", get(export_files))
+        .route("/api/v1/provider/auth/snippet", get(auth_snippet))
         .route("/auth/login", post(login))
         .route("/auth/logout", post(logout))
         .route("/api/v1/servers", get(list_servers).post(create_server))

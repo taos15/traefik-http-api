@@ -1,0 +1,19 @@
+http:
+  middlewares:
+    default-forward-auth:
+      chain:
+        middlewares: [oauth-signin, oauth-verify]
+    oauth-verify:
+      forwardAuth:
+        address: http://{{auth_host}}:4180/oauth2-proxy/auth
+        trustForwardHeader: true
+        authResponseHeaders: [X-Auth-Request-Preferred-Username]
+    oauth-signin:
+      errors:
+        status: ["401"]
+        service: "{{auth_service}}"
+        query: /oauth2-proxy/sign_in
+    oauth2-proxy-header:
+      headers:
+        customRequestHeaders:
+          X-oauth2-proxy: "true"
