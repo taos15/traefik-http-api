@@ -3,8 +3,9 @@
 - `GET /api/ping`: liveness.
 - `GET /api/v1/traefikconfig`: last complete Traefik dynamic JSON; anonymous by default or protected by `PROVIDER_TOKEN` bearer header. Returns 503 until the first snapshot.
 - `POST /auth/login` (`username`, `password`): admin session cookie; `POST /auth/logout`: invalidate session.
-- `GET /api/v1/servers`, `POST /api/v1/servers`, `PUT /api/v1/servers/{id}`, `DELETE /api/v1/servers/{id}`: Docker server records. Input: `name`, `transport` (`http`, `ssh`, `tls`, `unix`), `endpoint`, optional `tls_key`, `tls_cert`, `tls_ca` paths, `upstream_host`, `webui_host`, `enabled`.
-- `POST /api/v1/servers/test`: test an input server without saving it.
+- `GET /api/v1/servers`, `POST /api/v1/servers`, `PUT /api/v1/servers/{id}`, `DELETE /api/v1/servers/{id}`: Docker server records. Input: `name`, `transport` (`http`, `ssh`, `tls`, `unix`), `endpoint`, optional `tls_key`, `tls_cert`, `tls_ca` paths, `upstream_host`, `webui_host`, `enabled`, `prefer_network` (default `false`), `docker_network` (optional; required when network preference is on), and `webui_same_as_server` (default `false`). Browser-host inheritance uses `upstream_host` when enabled; otherwise `webui_host` is required.
+- `POST /api/v1/servers/test`: test an input server without saving it. Accepts the server-input shape but only validates connection settings; name and routing hosts may be blank.
+- `POST /api/v1/servers/discover`: discover using unsaved server-input connection settings, with name/routing hosts allowed to be blank. Returns `{"suggested_host":"host-or-address","networks":["custom-network"]}`; `suggested_host` may be `null`. Networks are eligible user-defined local bridges. Requires login and a matching Origin header.
 - `GET /api/v1/containers`: combined inventory including source server and resolved WebUI link.
 - `GET /api/v1/containers/{server_id}/{id}`: inspect a container on its source Engine.
 - `POST /api/v1/containers/{server_id}/{id}/actions` with `{"command":"start|stop|restart|pause|unpause"}`: send command to originating Engine.

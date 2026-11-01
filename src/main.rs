@@ -24,7 +24,9 @@ use sqlx::{
 use tokio::sync::{Mutex, RwLock, watch};
 use tower::ServiceExt;
 use tower_http::{services::ServeDir, trace::TraceLayer};
-use traefik_http_api::{Container, DockerServer, ServerInput, auth, docker, provider, traefik};
+use traefik_http_api::{
+    Container, DockerServer, ServerDiscovery, ServerInput, auth, docker, provider, traefik,
+};
 
 #[derive(Clone)]
 struct Settings {
@@ -104,7 +106,7 @@ fn settings() -> anyhow::Result<Settings> {
 }
 
 async fn servers(db: &SqlitePool) -> anyhow::Result<Vec<DockerServer>> {
-    let rows = sqlx::query("SELECT id,name,transport,endpoint,tls_key,tls_cert,tls_ca,upstream_host,webui_host,enabled FROM docker_servers ORDER BY name")
+    let rows = sqlx::query("SELECT id,name,transport,endpoint,tls_key,tls_cert,tls_ca,upstream_host,webui_host,prefer_network,docker_network,webui_same_as_server,enabled FROM docker_servers ORDER BY name")
         .fetch_all(db).await?;
     Ok(rows
         .into_iter()
@@ -118,20 +120,16 @@ async fn servers(db: &SqlitePool) -> anyhow::Result<Vec<DockerServer>> {
             tls_ca: r.get("tls_ca"),
             upstream_host: r.get("upstream_host"),
             webui_host: r.get("webui_host"),
+            prefer_network: r.get::<i64, _>("prefer_network") != 0,
+            docker_network: r.get("docker_network"),
+            webui_same_as_server: r.get::<i64, _>("webui_same_as_server") != 0,
             enabled: r.get::<i64, _>("enabled") != 0,
         })
         .collect())
 }
 
-fn validate(input: &ServerInput) -> anyhow::Result<()> {
-    anyhow::ensure!(
-        !input.name.trim().is_empty() && !input.endpoint.trim().is_empty(),
-        "name and endpoint required"
-    );
-    anyhow::ensure!(
-        !input.upstream_host.trim().is_empty() && !input.webui_host.trim().is_empty(),
-        "upstream and WebUI hosts required"
-    );
+fn validate_connection(input: &ServerInput) -> anyhow::Result<()> {
+    anyhow::ensure!(!input.endpoint.trim().is_empty(), "endpoint required");
     match input.transport.as_str() {
         "http" => anyhow::ensure!(
             input.endpoint.starts_with("http://"),
@@ -151,23 +149,70 @@ fn validate(input: &ServerInput) -> anyhow::Result<()> {
         ),
         _ => anyhow::bail!("invalid transport"),
     }
-    for h in [&input.upstream_host, &input.webui_host] {
-        let parsed = url::Url::parse(&format!("http://{h}"))?;
+    Ok(())
+}
+
+fn validate_host(host: &str) -> anyhow::Result<()> {
+    let parsed = url::Url::parse(&format!("http://{host}"))?;
+    anyhow::ensure!(
+        parsed.host_str().is_some()
+            && parsed.port().is_none()
+            && parsed.path() == "/"
+            && parsed.query().is_none()
+            && parsed.username().is_empty()
+            && parsed.password().is_none(),
+        "hosts must be hostnames or IP addresses, without port or scheme"
+    );
+    anyhow::ensure!(
+        !matches!(parsed.host_str(), Some("0.0.0.0" | "::")),
+        "unspecified host cannot be used as upstream or WebUI host"
+    );
+    Ok(())
+}
+
+fn validate(input: &ServerInput) -> anyhow::Result<()> {
+    validate_connection(input)?;
+    anyhow::ensure!(!input.name.trim().is_empty(), "name required");
+    anyhow::ensure!(
+        !input.upstream_host.trim().is_empty(),
+        "upstream host required"
+    );
+    if !input.webui_same_as_server {
+        anyhow::ensure!(!input.webui_host.trim().is_empty(), "WebUI host required");
+    }
+    if input.prefer_network {
         anyhow::ensure!(
-            parsed.host_str().is_some()
-                && parsed.port().is_none()
-                && parsed.path() == "/"
-                && parsed.query().is_none()
-                && parsed.username().is_empty()
-                && parsed.password().is_none(),
-            "hosts must be hostnames or IP addresses, without port or scheme"
-        );
-        anyhow::ensure!(
-            !matches!(parsed.host_str(), Some("0.0.0.0" | "::")),
-            "unspecified host cannot be used as upstream or WebUI host"
+            input
+                .docker_network
+                .as_deref()
+                .is_some_and(|network| !network.trim().is_empty()),
+            "Docker network required when network preference is enabled"
         );
     }
+    for h in std::iter::once(input.upstream_host.as_str())
+        .chain((!input.webui_same_as_server).then_some(input.webui_host.as_str()))
+    {
+        validate_host(h)?;
+    }
     Ok(())
+}
+
+fn server_from_input(id: String, input: ServerInput) -> DockerServer {
+    DockerServer {
+        id,
+        name: input.name,
+        transport: input.transport,
+        endpoint: input.endpoint,
+        tls_key: input.tls_key,
+        tls_cert: input.tls_cert,
+        tls_ca: input.tls_ca,
+        upstream_host: input.upstream_host,
+        webui_host: input.webui_host,
+        prefer_network: input.prefer_network,
+        docker_network: input.docker_network,
+        webui_same_as_server: input.webui_same_as_server,
+        enabled: input.enabled,
+    }
 }
 
 fn load_session(headers: &HeaderMap) -> Option<&str> {
@@ -310,21 +355,11 @@ async fn create_server(
     require_login(&state, &headers).await?;
     require_same_origin(&headers)?;
     validate(&input).map_err(bad)?;
-    let s = DockerServer {
-        id: uuid::Uuid::new_v4().to_string(),
-        name: input.name,
-        transport: input.transport,
-        endpoint: input.endpoint,
-        tls_key: input.tls_key,
-        tls_cert: input.tls_cert,
-        tls_ca: input.tls_ca,
-        upstream_host: input.upstream_host,
-        webui_host: input.webui_host,
-        enabled: input.enabled,
-    };
-    sqlx::query("INSERT INTO docker_servers (id,name,transport,endpoint,tls_key,tls_cert,tls_ca,upstream_host,webui_host,enabled) VALUES (?,?,?,?,?,?,?,?,?,?)")
+    let s = server_from_input(uuid::Uuid::new_v4().to_string(), input);
+    sqlx::query("INSERT INTO docker_servers (id,name,transport,endpoint,tls_key,tls_cert,tls_ca,upstream_host,webui_host,prefer_network,docker_network,webui_same_as_server,enabled) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)")
         .bind(&s.id).bind(&s.name).bind(&s.transport).bind(&s.endpoint).bind(&s.tls_key).bind(&s.tls_cert).bind(&s.tls_ca)
-        .bind(&s.upstream_host).bind(&s.webui_host).bind(s.enabled).execute(&state.db).await.map_err(bad)?;
+        .bind(&s.upstream_host).bind(&s.webui_host).bind(s.prefer_network).bind(&s.docker_network).bind(s.webui_same_as_server)
+        .bind(s.enabled).execute(&state.db).await.map_err(bad)?;
     trigger(&state);
     Ok((StatusCode::CREATED, Json(s)))
 }
@@ -337,26 +372,16 @@ async fn update_server(
     require_login(&state, &headers).await?;
     require_same_origin(&headers)?;
     validate(&input).map_err(bad)?;
-    let changed = sqlx::query("UPDATE docker_servers SET name=?,transport=?,endpoint=?,tls_key=?,tls_cert=?,tls_ca=?,upstream_host=?,webui_host=?,enabled=? WHERE id=?")
+    let changed = sqlx::query("UPDATE docker_servers SET name=?,transport=?,endpoint=?,tls_key=?,tls_cert=?,tls_ca=?,upstream_host=?,webui_host=?,prefer_network=?,docker_network=?,webui_same_as_server=?,enabled=? WHERE id=?")
         .bind(&input.name).bind(&input.transport).bind(&input.endpoint).bind(&input.tls_key).bind(&input.tls_cert).bind(&input.tls_ca)
-        .bind(&input.upstream_host).bind(&input.webui_host).bind(input.enabled).bind(&id).execute(&state.db).await.map_err(bad)?.rows_affected();
+        .bind(&input.upstream_host).bind(&input.webui_host).bind(input.prefer_network).bind(&input.docker_network)
+        .bind(input.webui_same_as_server).bind(input.enabled).bind(&id).execute(&state.db).await.map_err(bad)?.rows_affected();
     if changed == 0 {
         return Err(ApiError(StatusCode::NOT_FOUND, "server not found".into()));
     }
     remove_server_routes(&state, &id).await.map_err(internal)?;
     trigger(&state);
-    Ok(Json(DockerServer {
-        id,
-        name: input.name,
-        transport: input.transport,
-        endpoint: input.endpoint,
-        tls_key: input.tls_key,
-        tls_cert: input.tls_cert,
-        tls_ca: input.tls_ca,
-        upstream_host: input.upstream_host,
-        webui_host: input.webui_host,
-        enabled: input.enabled,
-    }))
+    Ok(Json(server_from_input(id, input)))
 }
 async fn delete_server(
     State(state): State<AppState>,
@@ -385,25 +410,28 @@ async fn test_server(
 ) -> ApiResult<Json<serde_json::Value>> {
     require_login(&state, &headers).await?;
     require_same_origin(&headers)?;
-    validate(&input).map_err(bad)?;
-    let s = DockerServer {
-        id: String::new(),
-        name: input.name,
-        transport: input.transport,
-        endpoint: input.endpoint,
-        tls_key: input.tls_key,
-        tls_cert: input.tls_cert,
-        tls_ca: input.tls_ca,
-        upstream_host: input.upstream_host,
-        webui_host: input.webui_host,
-        enabled: true,
-    };
+    validate_connection(&input).map_err(bad)?;
+    let s = server_from_input(String::new(), input);
     let result = docker::list(s)
         .await
         .map_err(|e| ApiError(StatusCode::BAD_GATEWAY, e.to_string()))?;
     Ok(Json(
         serde_json::json!({"ok":true,"containers":result.len()}),
     ))
+}
+
+async fn discover_server(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(input): Json<ServerInput>,
+) -> ApiResult<Json<ServerDiscovery>> {
+    require_login(&state, &headers).await?;
+    require_same_origin(&headers)?;
+    validate_connection(&input).map_err(bad)?;
+    let server = server_from_input(String::new(), input);
+    Ok(Json(docker::discover(&server).await.map_err(|error| {
+        ApiError(StatusCode::BAD_GATEWAY, error.to_string())
+    })?))
 }
 
 async fn inventory(state: &AppState) -> anyhow::Result<Vec<Container>> {
@@ -1022,6 +1050,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/auth/logout", post(logout))
         .route("/api/v1/servers", get(list_servers).post(create_server))
         .route("/api/v1/servers/test", post(test_server))
+        .route("/api/v1/servers/discover", post(discover_server))
         .route(
             "/api/v1/servers/{id}",
             axum::routing::put(update_server).delete(delete_server),
@@ -1045,4 +1074,100 @@ async fn main() -> anyhow::Result<()> {
     let listener = tokio::net::TcpListener::bind(addr).await?;
     axum::serve(listener, app).await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod backend_tests {
+    use super::*;
+
+    fn input() -> ServerInput {
+        ServerInput {
+            name: "server".into(),
+            transport: "http".into(),
+            endpoint: "http://docker.example:2375".into(),
+            tls_key: None,
+            tls_cert: None,
+            tls_ca: None,
+            upstream_host: "docker.example".into(),
+            webui_host: "browser.example".into(),
+            prefer_network: false,
+            docker_network: None,
+            webui_same_as_server: false,
+            enabled: true,
+        }
+    }
+
+    #[test]
+    fn validation_allows_blank_browser_host_when_inherited() {
+        let mut value = input();
+        value.webui_host.clear();
+        value.webui_same_as_server = true;
+        assert!(validate(&value).is_ok());
+        value.webui_same_as_server = false;
+        assert!(validate(&value).is_err());
+    }
+
+    #[test]
+    fn validation_requires_selected_network_when_preferred() {
+        let mut value = input();
+        value.prefer_network = true;
+        assert!(validate(&value).is_err());
+        value.docker_network = Some("apps".into());
+        assert!(validate(&value).is_ok());
+    }
+
+    #[test]
+    fn connection_validation_does_not_require_routing_fields() {
+        let mut value = input();
+        value.name.clear();
+        value.upstream_host.clear();
+        value.webui_host.clear();
+        assert!(validate_connection(&value).is_ok());
+    }
+
+    #[tokio::test]
+    async fn migration_defaults_and_server_reload_persist_preferences() {
+        let db = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::migrate!().run(&db).await.unwrap();
+        sqlx::query("INSERT INTO docker_servers(id,name,transport,endpoint,upstream_host,webui_host,enabled) VALUES('old','old','http','http://old:2375','old','old',1)")
+            .execute(&db).await.unwrap();
+        let old = servers(&db).await.unwrap().pop().unwrap();
+        assert!(!old.prefer_network);
+        assert_eq!(old.docker_network, None);
+        assert!(!old.webui_same_as_server);
+
+        sqlx::query("UPDATE docker_servers SET prefer_network=1,docker_network='apps',webui_same_as_server=1 WHERE id='old'")
+            .execute(&db).await.unwrap();
+        let updated = servers(&db).await.unwrap().pop().unwrap();
+        assert!(updated.prefer_network);
+        assert_eq!(updated.docker_network.as_deref(), Some("apps"));
+        assert!(updated.webui_same_as_server);
+        assert_eq!(updated.browser_host(), "old");
+
+        sqlx::query("INSERT INTO docker_servers(id,name,transport,endpoint,upstream_host,webui_host,prefer_network,docker_network,webui_same_as_server,enabled) VALUES('new','new','http','http://new:2375','new','saved-browser',1,'frontend',1,1)")
+            .execute(&db).await.unwrap();
+        let created = servers(&db)
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|server| server.id == "new")
+            .unwrap();
+        assert_eq!(created.docker_network.as_deref(), Some("frontend"));
+        assert_eq!(created.browser_host(), "new");
+        sqlx::query("DELETE FROM docker_servers WHERE id='new'")
+            .execute(&db)
+            .await
+            .unwrap();
+        assert!(
+            !servers(&db)
+                .await
+                .unwrap()
+                .iter()
+                .any(|server| server.id == "new")
+        );
+    }
 }

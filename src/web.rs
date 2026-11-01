@@ -1,6 +1,6 @@
 use dioxus::prelude::*;
 use serde::Deserialize;
-use traefik_http_api::{Container, DockerServer, ServerInput, container_icon_url};
+use traefik_http_api::{Container, DockerServer, ServerDiscovery, ServerInput, container_icon_url};
 
 #[derive(Deserialize)]
 struct ErrorMessage {
@@ -42,6 +42,25 @@ async fn mutate(method: &str, path: &str, body: Option<String>) -> Result<(), St
             .unwrap_or_else(|_| "request failed".into()));
     }
     Ok(())
+}
+
+async fn post_json<T: serde::de::DeserializeOwned>(path: &str, body: String) -> Result<T, String> {
+    let response = gloo_net::http::Request::post(path)
+        .header("X-Requested-With", "traefik-web")
+        .header("Content-Type", "application/json")
+        .body(body)
+        .map_err(|e| e.to_string())?
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    if !response.ok() {
+        return Err(response
+            .json::<ErrorMessage>()
+            .await
+            .map(|v| v.error)
+            .unwrap_or_else(|_| "request failed".into()));
+    }
+    response.json().await.map_err(|e| e.to_string())
 }
 
 fn main() {
@@ -286,6 +305,13 @@ fn ServerForm(revision: Signal<u64>, message: Signal<String>) -> Element {
     let mut cert = use_signal(String::new);
     let mut ca = use_signal(String::new);
     let mut enabled = use_signal(|| true);
+    let mut prefer_network = use_signal(|| false);
+    let mut docker_network = use_signal(String::new);
+    let mut webui_same_as_server = use_signal(|| true);
+    let mut networks = use_signal(Vec::<String>::new);
+    let mut discovery_loading = use_signal(|| false);
+    let mut discovery_error = use_signal(|| None::<String>);
+    let mut connection_revision = use_signal(|| 0_u64);
     let make_input = move || ServerInput {
         name: name(),
         transport: transport(),
@@ -294,8 +320,17 @@ fn ServerForm(revision: Signal<u64>, message: Signal<String>) -> Element {
         tls_cert: (!cert().is_empty()).then(|| cert()),
         tls_ca: (!ca().is_empty()).then(|| ca()),
         upstream_host: upstream(),
-        webui_host: browser(),
+        webui_host: if webui_same_as_server() {
+            upstream()
+        } else {
+            browser()
+        },
         enabled: enabled(),
+        prefer_network: prefer_network(),
+        docker_network: prefer_network()
+            .then(|| docker_network())
+            .filter(|v| !v.is_empty()),
+        webui_same_as_server: webui_same_as_server(),
     };
     rsx! {section {class:"panel",h2 {"Add Docker host"}
         p {"Docker API access, Traefik upstream, and browser WebUI address are separate."}
@@ -305,17 +340,44 @@ fn ServerForm(revision: Signal<u64>, message: Signal<String>) -> Element {
             match result {Ok(())=>{message.set("Server added".into());revision+=1;},Err(e)=>message.set(e)}
         }},
             label {"Name" input {required:true,value:"{name}",oninput:move |e|name.set(e.value())}}
-            label {"Transport" select {value:"{transport}",onchange:move |e|transport.set(e.value()),
+            label {"Transport" select {value:"{transport}",onchange:move |e|{transport.set(e.value());connection_revision+=1;},
                 option {value:"http","HTTP socket proxy"} option {value:"tls","Mutual TLS"} option {value:"ssh","SSH"} option {value:"unix","Unix socket"}
             }}
-            label {"Docker API endpoint (http://host:2375, ssh://user@host, or /var/run/docker.sock)" input {required:true,value:"{endpoint}",oninput:move |e|endpoint.set(e.value())}}
+            label {"Docker API endpoint (http://host:2375, ssh://user@host, or /var/run/docker.sock)" input {required:true,value:"{endpoint}",oninput:move |e|{endpoint.set(e.value());connection_revision+=1;}}}
             if transport()=="tls" {
-                label {"Client key path" input {value:"{key}",oninput:move |e|key.set(e.value())}}
-                label {"Client cert path" input {value:"{cert}",oninput:move |e|cert.set(e.value())}}
-                label {"CA path" input {value:"{ca}",oninput:move |e|ca.set(e.value())}}
+                label {"Client key path" input {value:"{key}",oninput:move |e|{key.set(e.value());connection_revision+=1;}}}
+                label {"Client cert path" input {value:"{cert}",oninput:move |e|{cert.set(e.value());connection_revision+=1;}}}
+                label {"CA path" input {value:"{ca}",oninput:move |e|{ca.set(e.value());connection_revision+=1;}}}
             }
-            label {"Traefik-reachable host" input {required:true,value:"{upstream}",oninput:move |e|upstream.set(e.value())}}
-            label {"Browser-reachable host" input {required:true,value:"{browser}",oninput:move |e|browser.set(e.value())}}
+            button {r#type:"button",disabled:discovery_loading(),onclick:move |_|{let input=make_input();let request_revision=connection_revision();async move{
+                discovery_loading.set(true);discovery_error.set(None);
+                let result=serde_json::to_string(&input).map_err(|e|e.to_string());
+                let result=match result {Ok(body)=>post_json::<ServerDiscovery>("/api/v1/servers/discover",body).await,Err(e)=>Err(e)};
+                if connection_revision()==request_revision {match result {
+                    Ok(found)=>{if upstream().trim().is_empty(){if let Some(host)=found.suggested_host{upstream.set(host);}}networks.set(found.networks);}
+                    Err(e)=>discovery_error.set(Some(e)),
+                }}
+                discovery_loading.set(false);
+            }},if discovery_loading(){"Discovering…"}else{"Discover host and networks"}}
+            if let Some(error)=discovery_error(){p {class:"error","Discovery failed: {error}. You can still enter host settings manually."}}
+            label {"Traefik-reachable host" input {required:true,value:"{upstream}",oninput:move |e|upstream.set(e.value())}
+                small {"Server host used when connecting through published ports."}
+            }
+            label {input {r#type:"checkbox",checked:prefer_network(),onchange:move |e|prefer_network.set(e.checked())} "Prefer Docker network"}
+            if prefer_network(){
+                label {"Docker network" select {required:true,value:"{docker_network}",onchange:move |e|docker_network.set(e.value()),
+                    option {value:"",disabled:true,"Select a network"}
+                    if !docker_network().is_empty() && !networks().contains(&docker_network()){option {value:"{docker_network}","{docker_network} (saved)"}}
+                    for network in networks(){option {value:"{network}","{network}"}}
+                }
+                if discovery_loading(){small {"Loading networks…"}}
+                else if networks().is_empty(){small {"No eligible networks found. Check the connection settings and run discovery."}}
+                }
+            }
+            label {input {r#type:"checkbox",checked:webui_same_as_server(),onchange:move |e|webui_same_as_server.set(e.checked())} "Same as server host"}
+            label {"Browser-reachable host" input {required:!webui_same_as_server(),disabled:webui_same_as_server(),value:if webui_same_as_server(){upstream()}else{browser()},oninput:move |e|browser.set(e.value())}
+                small {"Used with the container's published external WebUI port."}
+            }
             label {"Enabled" input {r#type:"checkbox",checked:enabled(),onchange:move |e|enabled.set(e.checked())}}
             div {class:"actions",button {r#type:"submit","Add server"}
                 button {r#type:"button",onclick:move |_|{let input=make_input();async move{
@@ -331,8 +393,17 @@ fn ServerForm(revision: Signal<u64>, message: Signal<String>) -> Element {
 fn ServerCard(server: DockerServer, revision: Signal<u64>, message: Signal<String>) -> Element {
     let id = server.id.clone();
     let mut editing = use_signal(|| false);
+    let network_summary = if server.prefer_network {
+        format!(
+            "Docker network preferred: {}",
+            server.docker_network.as_deref().unwrap_or("not selected")
+        )
+    } else {
+        "Published ports preferred".to_string()
+    };
     rsx! {article {class:"panel",h3 {"{server.name}"} p {"{server.transport} · {server.endpoint}"}
-        p {"Upstream: {server.upstream_host} · Browser: {server.webui_host}"}
+        p {"Server host: {server.upstream_host} · Browser host: " if server.webui_same_as_server {"{server.upstream_host} (same as server)"} else {"{server.webui_host}"}}
+        p {"{network_summary}"}
         p {"Enabled: {server.enabled}"}
         button {onclick:move |_|editing.set(!editing()),if editing(){"Cancel edit"}else{"Edit"}}
         if editing(){ EditServerForm {server:server.clone(),revision,message} }
@@ -353,25 +424,52 @@ fn EditServerForm(server: DockerServer, revision: Signal<u64>, message: Signal<S
     let mut key = use_signal(|| server.tls_key.clone().unwrap_or_default());
     let mut cert = use_signal(|| server.tls_cert.clone().unwrap_or_default());
     let mut ca = use_signal(|| server.tls_ca.clone().unwrap_or_default());
+    let mut prefer_network = use_signal(|| server.prefer_network);
+    let mut docker_network = use_signal(|| server.docker_network.clone().unwrap_or_default());
+    let mut webui_same_as_server = use_signal(|| server.webui_same_as_server);
+    let mut networks = use_signal(Vec::<String>::new);
+    let mut discovery_loading = use_signal(|| false);
+    let mut discovery_error = use_signal(|| None::<String>);
+    let mut connection_revision = use_signal(|| 0_u64);
     let id = server.id.clone();
     rsx! {form {onsubmit:move |e|{e.prevent_default();let id=id.clone();let input=ServerInput{
-        name:name(),endpoint:endpoint(),transport:transport(),upstream_host:upstream(),webui_host:browser(),enabled:enabled(),
-        tls_key:(!key().is_empty()).then(||key()),tls_cert:(!cert().is_empty()).then(||cert()),tls_ca:(!ca().is_empty()).then(||ca())};
+        name:name(),endpoint:endpoint(),transport:transport(),upstream_host:upstream(),webui_host:if webui_same_as_server(){upstream()}else{browser()},enabled:enabled(),
+        tls_key:(!key().is_empty()).then(||key()),tls_cert:(!cert().is_empty()).then(||cert()),tls_ca:(!ca().is_empty()).then(||ca()),
+        prefer_network:prefer_network(),docker_network:prefer_network().then(||docker_network()).filter(|v|!v.is_empty()),webui_same_as_server:webui_same_as_server()};
         async move{let body=serde_json::to_string(&input).unwrap_or_default();
             match mutate("PUT",&format!("/api/v1/servers/{id}"),Some(body)).await{Ok(())=>{message.set("Server updated".into());revision+=1;},Err(e)=>message.set(e)}
         }},
         label {"Name" input {value:"{name}",oninput:move |e|name.set(e.value())}}
-        label {"Transport" select {value:"{transport}",onchange:move |e|transport.set(e.value()),
+        label {"Transport" select {value:"{transport}",onchange:move |e|{transport.set(e.value());connection_revision+=1;},
             option {value:"http","HTTP proxy"} option {value:"tls","Mutual TLS"} option {value:"ssh","SSH"} option {value:"unix","Unix socket"}
         }}
-        label {"Docker API endpoint" input {value:"{endpoint}",oninput:move |e|endpoint.set(e.value())}}
+        label {"Docker API endpoint" input {value:"{endpoint}",oninput:move |e|{endpoint.set(e.value());connection_revision+=1;}}}
         if transport()=="tls"{
-            label {"Client key path" input {value:"{key}",oninput:move |e|key.set(e.value())}}
-            label {"Client cert path" input {value:"{cert}",oninput:move |e|cert.set(e.value())}}
-            label {"CA path" input {value:"{ca}",oninput:move |e|ca.set(e.value())}}
+            label {"Client key path" input {value:"{key}",oninput:move |e|{key.set(e.value());connection_revision+=1;}}}
+            label {"Client cert path" input {value:"{cert}",oninput:move |e|{cert.set(e.value());connection_revision+=1;}}}
+            label {"CA path" input {value:"{ca}",oninput:move |e|{ca.set(e.value());connection_revision+=1;}}}
         }
-        label {"Traefik-reachable host" input {value:"{upstream}",oninput:move |e|upstream.set(e.value())}}
-        label {"Browser-reachable host" input {value:"{browser}",oninput:move |e|browser.set(e.value())}}
+        button {r#type:"button",disabled:discovery_loading(),onclick:move |_|{let input=ServerInput{
+            name:name(),endpoint:endpoint(),transport:transport(),upstream_host:upstream(),webui_host:if webui_same_as_server(){upstream()}else{browser()},enabled:enabled(),
+            tls_key:(!key().is_empty()).then(||key()),tls_cert:(!cert().is_empty()).then(||cert()),tls_ca:(!ca().is_empty()).then(||ca()),
+            prefer_network:prefer_network(),docker_network:prefer_network().then(||docker_network()).filter(|v|!v.is_empty()),webui_same_as_server:webui_same_as_server()};
+            let request_revision=connection_revision();async move{discovery_loading.set(true);discovery_error.set(None);
+                let result=serde_json::to_string(&input).map_err(|e|e.to_string());
+                let result=match result{Ok(body)=>post_json::<ServerDiscovery>("/api/v1/servers/discover",body).await,Err(e)=>Err(e)};
+                if connection_revision()==request_revision{match result{Ok(found)=>{if upstream().trim().is_empty(){if let Some(host)=found.suggested_host{upstream.set(host);}}networks.set(found.networks);},Err(e)=>discovery_error.set(Some(e))}}
+                discovery_loading.set(false);
+            }
+        },if discovery_loading(){"Discovering…"}else{"Discover host and networks"}}
+        if let Some(error)=discovery_error(){p {class:"error","Discovery failed: {error}. You can still enter host settings manually."}}
+        label {"Traefik-reachable host" input {value:"{upstream}",oninput:move |e|upstream.set(e.value())} small {"Server host used when connecting through published ports."}}
+        label {input {r#type:"checkbox",checked:prefer_network(),onchange:move |e|prefer_network.set(e.checked())} "Prefer Docker network"}
+        if prefer_network(){label {"Docker network" select {required:true,value:"{docker_network}",onchange:move |e|docker_network.set(e.value()),
+            option {value:"",disabled:true,"Select a network"}
+            if !docker_network().is_empty() && !networks().contains(&docker_network()){option {value:"{docker_network}","{docker_network} (saved)"}}
+            for network in networks(){option {value:"{network}","{network}"}}
+        } if discovery_loading(){small {"Loading networks…"}} else if networks().is_empty(){small {"No networks discovered yet. Refresh discovery or keep the saved selection."}}}}
+        label {input {r#type:"checkbox",checked:webui_same_as_server(),onchange:move |e|webui_same_as_server.set(e.checked())} "Same as server host"}
+        label {"Browser-reachable host" input {disabled:webui_same_as_server(),value:if webui_same_as_server(){upstream()}else{browser()},oninput:move |e|browser.set(e.value())} small {"Used with the container's published external WebUI port."}}
         label {"Enabled" input {r#type:"checkbox",checked:enabled(),onchange:move |e|enabled.set(e.checked())}}
         button {r#type:"submit","Save changes"}
     }}
