@@ -63,6 +63,17 @@ pub struct Port {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ContainerRouting {
+    pub state: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hostname: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub checked_at: Option<i64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Container {
     pub id: String,
     pub name: String,
@@ -75,7 +86,13 @@ pub struct Container {
     pub ports: Vec<Port>,
     #[serde(default)]
     pub networks: Vec<String>,
+    #[serde(default)]
+    pub webui_url_default: Option<String>,
+    #[serde(default)]
+    pub webui_url_override: Option<String>,
     pub webui_url: Option<String>,
+    #[serde(default)]
+    pub routing: Option<ContainerRouting>,
 }
 
 /// Docker does not define a general container icon field. Prefer an explicit

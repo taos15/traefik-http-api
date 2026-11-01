@@ -407,6 +407,9 @@ mod tests {
             ports: vec![],
             networks: networks.iter().map(|s| s.to_string()).collect(),
             webui_url: None,
+            webui_url_default: None,
+            webui_url_override: None,
+            routing: None,
         }
     }
     #[test]

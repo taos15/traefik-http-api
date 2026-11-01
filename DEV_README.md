@@ -62,6 +62,10 @@ cargo check --no-default-features --features web --target wasm32-unknown-unknown
 
 For routing changes, also verify a real Docker port mapping: a container with `8080:80` and `traefik.webuiport=8080` must produce `container-name:80` on the selected network and `server-host:8080` otherwise. Browser links must stay on the external port. Exercise add/edit checkboxes and reload/restart persistence after frontend changes.
 
+For container-card changes, exercise enabled/missing/error router observations and unavailable/stale Traefik API data without equating generated configuration with a confirmed route. Verify browser URL save/cancel/reset, invalid URL feedback, refresh/restart persistence, and isolation between Docker servers and container IDs. Check cards at desktop and narrow viewport widths. Browser overrides must never affect provider generation or Docker labels.
+
+Routing confirmation uses minimal runtime metadata from the existing `/api/rawdata` poll, not the redacted `@file` export snapshot. Confirm only matching HTTP-provider resources owned by the saved server/container identity. API failures invalidate confirmation; observations older than 30 seconds are unconfirmed. The browser URL override is a separate SQLite preference; automatic generation remains unchanged, and clearing the preference resumes automatic resolution.
+
 ## Server settings and routing contracts
 
 - `upstream_host` is the concrete server address used for host/published-port routing. Discovery suggests a value; saving persists the user's choice. Configuration generation does not rediscover it.

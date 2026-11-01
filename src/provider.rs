@@ -378,20 +378,32 @@ pub fn generate(
     Ok(json!({"http":{"routers":routers,"services":services,"middlewares":auth_middlewares}}))
 }
 
-pub fn route_owners(containers: &[Container], config: &Value) -> Vec<(String, String, String)> {
+pub fn route_excluded_reason(c: &Container) -> Option<&'static str> {
+    if c.labels
+        .get("traefik.http.disable")
+        .is_some_and(|v| v.eq_ignore_ascii_case("true"))
+    {
+        return Some("Traefik routing disabled by label");
+    }
+    if !(c
+        .labels
+        .get("traefik.enable")
+        .is_some_and(|v| v.eq_ignore_ascii_case("true"))
+        || c.labels.get("swag").is_some_and(|v| v == "enable"))
+    {
+        return Some("Traefik not enabled for this container");
+    }
+    None
+}
+
+pub fn route_owners(
+    containers: &[Container],
+    config: &Value,
+) -> Vec<(String, String, String, String)> {
     containers
         .iter()
         .filter_map(|c| {
-            if c.state != "running"
-                || c.labels
-                    .get("traefik.http.disable")
-                    .is_some_and(|v| v.eq_ignore_ascii_case("true"))
-                || !(c
-                    .labels
-                    .get("traefik.enable")
-                    .is_some_and(|v| v.eq_ignore_ascii_case("true"))
-                    || c.labels.get("swag").is_some_and(|v| v == "enable"))
-            {
+            if c.state != "running" || route_excluded_reason(c).is_some() {
                 return None;
             }
             let fallback_name = default_route_name(&c.name);
@@ -408,7 +420,14 @@ pub fn route_owners(containers: &[Container], config: &Value) -> Vec<(String, St
             config["http"]["routers"]
                 .as_object()?
                 .contains_key(name)
-                .then(|| (name.to_owned(), service.to_owned(), c.server_id.clone()))
+                .then(|| {
+                    (
+                        name.to_owned(),
+                        service.to_owned(),
+                        c.server_id.clone(),
+                        c.id.clone(),
+                    )
+                })
         })
         .collect()
 }
@@ -463,6 +482,9 @@ mod tests {
             }],
             networks: vec![],
             webui_url: None,
+            webui_url_default: None,
+            webui_url_override: None,
+            routing: None,
         };
         c.labels.insert("traefik.enable".into(), "true".into());
         c.labels.insert(
@@ -524,6 +546,9 @@ mod tests {
             }],
             networks: vec![],
             webui_url: None,
+            webui_url_default: None,
+            webui_url_override: None,
+            routing: None,
         };
         c.labels.insert("traefik.enable".into(), "true".into());
         c.labels
@@ -588,6 +613,9 @@ mod tests {
             }],
             networks: vec![],
             webui_url: None,
+            webui_url_default: None,
+            webui_url_override: None,
+            routing: None,
         };
         assert!(webui_url(&c, &server).is_none());
         assert!(
@@ -654,6 +682,9 @@ mod tests {
             }],
             networks: vec![],
             webui_url: None,
+            webui_url_default: None,
+            webui_url_override: None,
+            routing: None,
         };
         assert_eq!(webui_url(&container, &server), None);
         container.ports[0].private_port = 2375;
@@ -719,6 +750,9 @@ mod tests {
             }],
             networks: vec![],
             webui_url: None,
+            webui_url_default: None,
+            webui_url_override: None,
+            routing: None,
         };
         let doc = generate(
             std::slice::from_ref(&container),
@@ -772,6 +806,9 @@ mod tests {
             }],
             networks: vec![],
             webui_url: None,
+            webui_url_default: None,
+            webui_url_override: None,
+            routing: None,
         };
         let make = |containers: &[Container]| {
             super::generate(
@@ -838,6 +875,9 @@ mod tests {
             }],
             networks: vec!["proxynet".into()],
             webui_url: None,
+            webui_url_default: None,
+            webui_url_override: None,
+            routing: None,
         };
         let doc = super::generate(
             &[c],
@@ -902,6 +942,9 @@ mod tests {
             ],
             networks: vec!["proxy".into()],
             webui_url: None,
+            webui_url_default: None,
+            webui_url_override: None,
+            routing: None,
         }
     }
 

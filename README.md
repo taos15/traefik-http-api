@@ -178,6 +178,23 @@ For a container named `app`, published as `8080:80`, with `traefik.webuiport=808
 
 Only running, opted-in containers receive generated routes. The **Containers** tab also lists stopped and created containers, with filters and controls to start or manage them.
 
+### Container cards and browser links
+
+Each container card shows its Docker state separately from its Traefik routing status:
+
+| Routing status | Meaning |
+| --- | --- |
+| **Routed** | A recent Traefik API observation confirms that the matching HTTP-provider router is enabled. This is not an application health or reachability check. |
+| **Generated · unconfirmed** | This app generated a route, but Traefik has not recently confirmed it. The card explains unavailable/stale API data, a missing router, or a reported router error where known. |
+| **Not routed** | The container has no route in this app's generated configuration. A known exclusion reason is shown where available. |
+| **Status unavailable** | No usable routing snapshot or reliable container match is available. |
+
+These statuses cover routes managed by this app, not routes independently created through Traefik's other providers. Confirmation requires access to Traefik's internal API; see [Traefik API settings](#parameters) below.
+
+The card's browser link is marked **Automatic** or **Custom**. Choose **Edit URL** to save a full `http://` or `https://` address, including an optional port, path, query, or fragment. Embedded usernames/passwords and other URL schemes are not accepted. You can set a custom URL even when automatic detection cannot produce a link.
+
+**Reset to automatic** removes the saved override and restores the existing label/server-based link. Editing the browser URL changes only **Open WebUI**; it does not change Docker labels, published ports, or Traefik routes. Custom URLs are stored in the application's database per Docker server and container ID, survive refreshes and app restarts, and take precedence over automatic browser-link settings. A recreated container with a new ID starts in automatic mode.
+
 ## Container labels
 
 Set these labels on the **application containers**, not just on this service. They are interpreted by this application's HTTP-provider generator; they are not a replacement for Traefik's own Docker-provider label reference.

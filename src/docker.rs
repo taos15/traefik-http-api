@@ -140,6 +140,9 @@ pub async fn list(server: DockerServer) -> anyhow::Result<Vec<Container>> {
                     .map(|n| n.into_keys().collect())
                     .unwrap_or_default(),
                 webui_url: None,
+                webui_url_default: None,
+                webui_url_override: None,
+                routing: None,
             }
         })
         .collect())

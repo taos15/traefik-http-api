@@ -475,6 +475,52 @@ fn EditServerForm(server: DockerServer, revision: Signal<u64>, message: Signal<S
     }}
 }
 
+fn validate_browser_url(value: &str) -> Result<String, String> {
+    let value = value.trim();
+    if value.is_empty() {
+        return Err("Enter a browser URL or choose Reset to automatic.".into());
+    }
+    let has_authority = value
+        .get(..7)
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("http://"))
+        || value
+            .get(..8)
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case("https://"));
+    if !has_authority {
+        return Err("Enter a valid absolute HTTP or HTTPS URL.".into());
+    }
+    let parsed = url::Url::parse(value)
+        .map_err(|_| "Enter a valid absolute HTTP or HTTPS URL.".to_string())?;
+    if !matches!(parsed.scheme(), "http" | "https") || parsed.host_str().is_none() {
+        return Err("Enter a valid absolute HTTP or HTTPS URL.".into());
+    }
+    if !parsed.username().is_empty() || parsed.password().is_some() {
+        return Err("Browser URLs cannot include a username or password.".into());
+    }
+    Ok(value.to_owned())
+}
+
+fn format_checked_at(timestamp: i64) -> String {
+    let days = timestamp.div_euclid(86_400);
+    let seconds = timestamp.rem_euclid(86_400);
+    let shifted = days + 719_468;
+    let era = shifted.div_euclid(146_097);
+    let day_of_era = shifted - era * 146_097;
+    let year_of_era =
+        (day_of_era - day_of_era / 1_460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
+    let mut year = year_of_era + era * 400;
+    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
+    let month_prime = (5 * day_of_year + 2) / 153;
+    let day = day_of_year - (153 * month_prime + 2) / 5 + 1;
+    let month = month_prime + if month_prime < 10 { 3 } else { -9 };
+    if month <= 2 {
+        year += 1;
+    }
+    let hour = seconds / 3_600;
+    let minute = (seconds % 3_600) / 60;
+    format!("{year:04}-{month:02}-{day:02} {hour:02}:{minute:02} UTC")
+}
+
 #[component]
 fn ContainerCard(container: Container, revision: Signal<u64>, message: Signal<String>) -> Element {
     let icon = container_icon_url(&container.labels).map(str::to_owned);
@@ -495,7 +541,36 @@ fn ContainerCard(container: Container, revision: Signal<u64>, message: Signal<St
     };
     let id = container.id.clone();
     let server_id = container.server_id.clone();
+    let routing = container.routing.clone();
+    let (routing_label, routing_class) = match routing.as_ref().map(|value| value.state.as_str()) {
+        Some("routed") => ("Routed", "routed"),
+        Some("unconfirmed") => ("Generated · unconfirmed", "unconfirmed"),
+        Some("not_routed") => ("Not routed", "not-routed"),
+        _ => ("Status unavailable", "unavailable"),
+    };
+    let routing_reason = routing.as_ref().and_then(|value| value.reason.clone());
+    let route_hostname = routing.as_ref().and_then(|value| value.hostname.clone());
+    let checked_at = routing
+        .as_ref()
+        .and_then(|value| value.checked_at)
+        .map(format_checked_at);
+    let custom_url = container.webui_url_override.clone();
+    let has_custom_url = custom_url.is_some();
+    let url_source = if has_custom_url {
+        "Custom"
+    } else {
+        "Automatic"
+    };
+    let effective_url = container.webui_url.clone();
+    let edit_start_url = custom_url
+        .or_else(|| effective_url.clone())
+        .or_else(|| container.webui_url_default.clone())
+        .unwrap_or_default();
     let mut details = use_signal(|| None::<String>);
+    let mut editing_url = use_signal(|| false);
+    let mut url_input = use_signal(String::new);
+    let mut url_error = use_signal(|| None::<String>);
+    let mut saving_url = use_signal(|| false);
     let mut published_ports = container
         .ports
         .iter()
@@ -514,6 +589,67 @@ fn ContainerCard(container: Container, revision: Signal<u64>, message: Signal<St
         p {"{container.server_name} · " span {class:"container-state {state_class}","{container.state}"}}
         if let Some(health)=container.health {p {"Health: {health}"}}
         p {for (private_port,host,protocol) in published_ports {span {class:"port","{private_port} → {host}/{protocol} "}}}
+        section {class:"container-routing",aria_label:"Traefik routing status",
+            p {class:"routing-line",
+                span {class:"routing-label","Traefik"}
+                span {class:"routing-status {routing_class}","{routing_label}"}
+            }
+            if let Some(hostname)=route_hostname {p {class:"routing-detail","Route: {hostname}"}}
+            if let Some(reason)=routing_reason {p {class:"routing-detail","{reason}"}}
+            if let Some(checked_at)=checked_at {small {class:"routing-checked","Last checked: {checked_at}"}}
+        }
+        section {class:"browser-section",aria_label:"Browser URL",
+            div {class:"browser-heading",
+                span {class:"browser-label","Browser URL"}
+                span {class:"url-source","{url_source}"}
+            }
+            if let Some(link)=effective_url.clone() {
+                p {class:"browser-url",a {href:"{link}",target:"_blank",rel:"noopener noreferrer","{link}"}}
+            } else {
+                p {class:"browser-url browser-url-empty","No browser URL configured."}
+            }
+            if editing_url() {
+                form {class:"browser-edit-form",aria_busy:saving_url(),onsubmit:{let id=id.clone();let server_id=server_id.clone();move |e|{
+                    e.prevent_default();
+                    let id=id.clone();let server_id=server_id.clone();let value=url_input();
+                    async move {
+                        if saving_url(){return;}
+                        let value=match validate_browser_url(&value){Ok(value)=>value,Err(error)=>{url_error.set(Some(error));return;}};
+                        saving_url.set(true);url_error.set(None);
+                        let body=serde_json::json!({"url":value}).to_string();
+                        match mutate("PUT",&format!("/api/v1/containers/{server_id}/{id}/webui-url"),Some(body)).await {
+                            Ok(())=>{editing_url.set(false);message.set("Browser URL updated".into());revision+=1;},
+                            Err(error)=>url_error.set(Some(error)),
+                        }
+                        saving_url.set(false);
+                    }
+                }},
+                    label {"Browser URL"
+                        input {r#type:"url",required:true,autofocus:true,disabled:saving_url(),placeholder:"https://app.example.com/path",value:"{url_input}",oninput:move |e|{url_input.set(e.value());url_error.set(None);}}
+                    }
+                    small {"Use an absolute HTTP or HTTPS URL. This changes only Open WebUI; Traefik routing is not affected."}
+                    if let Some(error)=url_error(){p {class:"error",role:"alert","{error}"}}
+                    div {class:"actions",
+                        button {r#type:"submit",disabled:saving_url(),if saving_url(){"Saving…"}else{"Save"}}
+                        button {r#type:"button",class:"secondary",disabled:saving_url(),onclick:move |_|{editing_url.set(false);url_error.set(None);},"Cancel"}
+                        if has_custom_url {
+                            button {r#type:"button",class:"secondary",disabled:saving_url(),onclick:{let id=id.clone();let server_id=server_id.clone();move |_|{let id=id.clone();let server_id=server_id.clone();async move{
+                                if saving_url(){return;}
+                                saving_url.set(true);url_error.set(None);
+                                let body=serde_json::json!({"url":null}).to_string();
+                                match mutate("PUT",&format!("/api/v1/containers/{server_id}/{id}/webui-url"),Some(body)).await {
+                                    Ok(())=>{editing_url.set(false);message.set("Browser URL reset to automatic".into());revision+=1;},
+                                    Err(error)=>url_error.set(Some(error)),
+                                }
+                                saving_url.set(false);
+                            }}},"Reset to automatic"}
+                        }
+                    }
+                }
+            } else {
+                button {r#type:"button",class:"secondary edit-url",onclick:move |_|{url_input.set(edit_start_url.clone());url_error.set(None);editing_url.set(true);},"Edit URL"}
+            }
+        }
         button {onclick:{let id=id.clone();let server_id=server_id.clone();move |_|{let id=id.clone();let server_id=server_id.clone();async move{
             match request::<serde_json::Value>(&format!("/api/v1/containers/{server_id}/{id}")).await{
                 Ok(value)=>details.set(Some(serde_json::to_string_pretty(&value).unwrap_or_default())),Err(e)=>message.set(e)
@@ -521,7 +657,7 @@ fn ContainerCard(container: Container, revision: Signal<u64>, message: Signal<St
         }}},"Inspect"}
         if let Some(info)=details(){details {summary {"Container details"}pre {"{info}"}}}
         div {class:"actions",
-            if let Some(link)=container.webui_url {a {href:"{link}",target:"_blank",rel:"noopener noreferrer","Open WebUI"}}
+            if let Some(link)=effective_url {a {href:"{link}",target:"_blank",rel:"noopener noreferrer","Open WebUI"}}
             for command in match container.state.as_str(){"running"=>vec!["stop","restart","pause"],"paused"=>vec!["unpause","stop"],"exited"|"created"=>vec!["start"],_=>vec![]} {
                 button {onclick:{let id=id.clone();let server_id=server_id.clone();move |_|{let id=id.clone();let server_id=server_id.clone();async move{
                     let body=serde_json::json!({"command":command}).to_string();
@@ -530,4 +666,44 @@ fn ContainerCard(container: Container, revision: Signal<u64>, message: Signal<St
             }
         }
     }}
+}
+
+#[cfg(test)]
+mod container_card_tests {
+    use super::{format_checked_at, validate_browser_url};
+
+    #[test]
+    fn browser_url_accepts_absolute_http_urls_with_query_and_fragment() {
+        assert_eq!(
+            validate_browser_url(" https://example.com:8443/admin?tab=1#settings ").unwrap(),
+            "https://example.com:8443/admin?tab=1#settings"
+        );
+        assert!(validate_browser_url("http://192.168.1.20:8080/").is_ok());
+        assert_eq!(
+            validate_browser_url("HTTP://[2001:db8::1]:8080/admin?tab=1#settings").unwrap(),
+            "HTTP://[2001:db8::1]:8080/admin?tab=1#settings"
+        );
+    }
+
+    #[test]
+    fn browser_url_rejects_relative_unsafe_and_credential_urls() {
+        for value in [
+            "",
+            "/admin",
+            "https:example.com",
+            "http:foo",
+            "javascript:alert(1)",
+            "file:///tmp/admin",
+            "https://user:password@example.com/",
+        ] {
+            assert!(validate_browser_url(value).is_err(), "accepted {value}");
+        }
+    }
+
+    #[test]
+    fn checked_at_is_readable_utc() {
+        assert_eq!(format_checked_at(0), "1970-01-01 00:00 UTC");
+        assert_eq!(format_checked_at(-1), "1969-12-31 23:59 UTC");
+        assert_eq!(format_checked_at(1_700_000_000), "2023-11-14 22:13 UTC");
+    }
 }
