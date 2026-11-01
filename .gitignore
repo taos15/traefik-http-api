@@ -1,76 +1,14 @@
-# Yarn package manager with PnP
-# https://yarnpkg.com/getting-started/qa/#which-files-should-be-gitignored
-.pnp.*
-.yarn/*
-!.yarn/patches
-!.yarn/plugins
-!.yarn/releases
-!.yarn/sdks
-!.yarn/versions
-node_modules
-
-# pnpm package manager
-
-# npm package manager
-dist
-# Logs
-logs
-*.log
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-pnpm-debug.log*
-lerna-debug.log*
-
-# Cache
-/.cache
-.eslintcache
-.stylelintcache
-
-# Testing
-coverage
-*.lcov
-
-# Compiled output
-
-dist-ssr
-*.local
-UI/*
-
-# Environment variables
-*.override.env
+/target/
+/web/dist/app.js
+/web/dist/app_bg.wasm
+/web/dist/app.d.ts
+/web/dist/app_bg.wasm.d.ts
+/web/dist/snippets/
+/data/
+/db/
+*.db
+*.db-wal
+*.db-shm
+*.db.backup
 .env
-
-
-# Editor directories and files
-# Visual Studio Code
-# https://github.com/github/gitignore/blob/master/Global/VisualStudioCode.gitignore
-.vscode/*
-!.vscode/settings.json
-!.vscode/tasks.json
-!.vscode/launch.json
-!.vscode/extensions.json
-!.vscode/react.code-snippets
-
-# WebStorm
-.idea
-
-# macOS
-# https://github.com/github/gitignore/blob/master/Global/macOS.gitignore
-.DS_Store
-
-*.suo
-*.ntvs*
-*.njsproj
-*.sln
-*.sw?
-
-# databases
-**/*.db*
-**/prisma/db
-**/prisma/migrations
-db
-
-# # local files
-# **/traefikConfigTemplate.?s
-# **/traefikConfigTemplate.?s.map
+*.log

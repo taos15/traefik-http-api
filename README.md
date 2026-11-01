@@ -1,71 +1,161 @@
-# traefik-http-api
+# Traefik HTTP API — Rust
 
-## work in process
+Aggregate independent Docker Engines and provide a single Traefik HTTP-provider dynamic configuration and Dioxus WebUI. The [rewrite plan and progress ledger](RUST_REWRITE_PLAN.md) records decisions and remaining work.
 
-## Instalation
+## Run locally
 
-1. Clone repo
-1. Run `pnpm i`
-1. Copy the `.env.example` file and rename it to `.env`
-1. Rename the `traefikConfigTemplate.ts.example` to `traefikConfigTemplate.ts` and change the authelia ip and you domain
+Requires Rust 1.99+, the `wasm32-unknown-unknown` target, and `wasm-bindgen-cli` 0.2.130.
 
-## Run the App
-
-To run the app run:
-
-```bash
-pnpm run build
-pnpm run start
-
+```sh
+rustup target add wasm32-unknown-unknown
+cargo install wasm-bindgen-cli --version 0.2.130 --locked
+cargo build --release --no-default-features --features web --target wasm32-unknown-unknown
+wasm-bindgen --target web --out-dir web/dist --out-name app target/wasm32-unknown-unknown/release/traefik-web.wasm
+cargo run --no-default-features --features server --bin traefik-server
 ```
 
-### The app will be available at you localhost port 4001
+Create `data/`, set `DOMAIN`, `DATABASE_URL=sqlite://data/traefik.db`, and set a long `ADMIN_BOOTSTRAP_PASSWORD` before first run. Login as `admin`. The generated `web/dist/app.js`, `.wasm`, and `snippets/` assets must be rebuilt after UI changes. Container deployment: `docker compose up --build` with those settings provided in `.env` (see `.env.example`). Mount your Docker socket, SSH credentials, or TLS certificate files as appropriate for each connection.
 
-- If you get an error saying that the port is been use you can run `lsof -ti :4001 | xargs kill -9` to kill the
-    process running in that port.
+**Existing Prisma SQLite database:** back it up while the old service is stopped, then use the backup as the new `DATABASE_URL` file. Migrations create new tables alongside `containerserver`, and startup imports server IDs/names/HTTP endpoints with their former `enable` state using INSERT OR IGNORE. Inspect the imported Traefik and browser hosts; the old HTTP API host might not be reachable from either. The legacy plaintext `User` table is ignored; a new admin password is required. Keep the original backup until verified. Never overwrite the original database with an empty file.
 
-## Treafik setup
+## Container images and releases
 
-you need to add a `http` provider to your traefik static config. It looks like this:
+Images are published to `ghcr.io/taos15/traefik-http-api` for **linux/amd64** and
+**linux/arm64** by **MultiArch Master CI**:
+
+| Trigger | Image tags | GitHub Release |
+| --- | --- | --- |
+| Push/merge into `master` | `edge`, `sha-<full-commit>` | None |
+| Push `v1.2.3` | `1.2.3`, `latest`, `sha-<full-commit>` | Generated release notes |
+| Push `v1.3.0-rc.1` | `1.3.0-rc.1`, `sha-<full-commit>` | Prerelease |
+| Pull request | Checks only | None |
+
+`edge` tracks the current successful `master` build; `latest` tracks the most
+recently published stable release. Publish stable releases in version order;
+rerunning an older stable tag also promotes that version to `latest`.
+Prereleases never update `latest`. Commit tags identify the source commit, but
+reruns can rebuild dependencies/base images; pin the image digest for immutable deployment.
+
+To release a commit already merged into `master`:
+
+```sh
+git switch master
+git pull --ff-only
+git tag v1.2.3
+git push origin v1.2.3
+```
+
+Tags must be `vMAJOR.MINOR.PATCH` with an optional SemVer prerelease suffix;
+build metadata (`+...`) is not accepted in Docker tags. A local tag does not
+trigger publishing until pushed. Push release tags with your normal Git credentials;
+tags created using a workflow's `GITHUB_TOKEN` do not trigger another workflow.
+GitHub Releases are created after image publication, so publishing a Release
+in the UI does not initiate a build. Use a new version tag for each release.
+
+The workflow runs Rust checks, builds both architectures on native runners using
+Docker's pinned reusable builder, and publishes a `build-<run-id>-<attempt>` candidate.
+Both architectures must pass container startup, database, `/api/ping`, and frontend
+asset checks before the candidate digest is promoted to public channel/version tags.
+Failures leave those tags unchanged. Candidate tags remain available for diagnostics.
+The GitHub Actions run summary includes the image digest.
+
+Manual runs are available under **Actions → MultiArch Master CI → Run workflow**;
+select `master` or an existing valid version tag. Manual runs on other branches
+are rejected. Stale master runs publish their commit tag without moving `edge`
+backwards. Release creation is idempotent and preserves existing release notes.
+
+GHCR authentication uses the repository's `GITHUB_TOKEN` with `packages: write`.
+For the existing package, verify **Package settings → Manage Actions access** grants
+this repository write access. The legacy `DOCKER_TOKEN` secret is not used.
+The first remote run must confirm package permissions and native ARM64 execution.
+
+To deploy a published image while keeping the settings, mounts, and network in
+`docker-compose.yml`, create `compose.image.yml`:
 
 ```yaml
-# http API provider
+services:
+  api:
+    image: ghcr.io/taos15/traefik-http-api:latest
+```
+
+Then run:
+
+```sh
+docker compose -f docker-compose.yml -f compose.image.yml pull
+docker compose -f docker-compose.yml -f compose.image.yml up -d --no-build
+```
+
+Use a version tag or digest instead of `latest` to pin a deployment. Review the
+database migration guidance above before upgrading from the pre-Rust app.
+
+## Traefik setup
+
+In Traefik install configuration, enable the HTTP provider:
+
+```yaml
+providers:
+  file:
+    directory: /conf.d
+    watch: true
+  http:
+    endpoint: http://traefik-http-api:4000/api/v1/traefikconfig
+```
+
+Traefik polls that GET endpoint. It is anonymous by default on the same listener as the WebUI; restrict access with networking/firewall. To require a bearer token instead, set `PROVIDER_TOKEN` on the app and configure `providers.http.headers.Authorization: 'Bearer <token>'` in Traefik. Management routes and UI always require login.
+
+The app and Traefik **must run on the same Docker daemon and custom Docker network**, with Docker DNS resolution of container names. For automatic auth, the auth container must also run on that daemon/network. The app tries Traefik's `http://<container-name>:8080/api/rawdata`; when the API is secured or exposed on another internal URL, use `TRAEFIK_API_URL` and optionally `TRAEFIK_API_USERNAME` with `TRAEFIK_API_PASSWORD` or `TRAEFIK_API_PASSWORD_FILE`. When `api.insecure=false`, expose `api@internal` on a dedicated internal entrypoint/router with Basic auth independently of the HTTP provider. Passwords are never stored in SQLite.
+
+Example internal API router for `api.insecure=false` (enable a static `traefik-api` entrypoint on `:8080` in Traefik and set `TRAEFIK_API_URL=http://traefik:8080`). Keep the entrypoint reachable **only on the Docker network** and replace the example hash with a real `htpasswd` hash; in Compose, escape `$` as `$$`:
+
+```yaml
 http:
-    endpoint: "http://localhost:4000/api/1/traefikconfig"
+  routers:
+    internal-traefik-api:
+      entryPoints: [traefik-api]
+      rule: PathPrefix(`/api/`)
+      service: api@internal
+      middlewares: [internal-api-basic]
+  middlewares:
+    internal-api-basic:
+      basicAuth:
+        users: ["internal:$apr1$REPLACE_WITH_REAL_HASH"]
 ```
 
-Change the IP address to the IP of the server running the api server.
+The app needs the matching plaintext user/password through its own environment or mounted secret; browser-only ForwardAuth login cannot authenticate its internal API request. Static `api.insecure=false` must also be set so Traefik does not expose an unprotected API on its default entrypoint.
 
-## Container options
-
-### Labels
-
-You can set this labels in your container to overwrite default values
+To override automatic authentication, define **one** `default-forward-auth` middleware in a Traefik dynamic file. The file definition wins in full; the app does not merge its resources with that file. Other manually defined ForwardAuth middlewares remain independent:
 
 ```yaml
-labels:
-    - traefik.enable=true # reverse proxy the container
-    - traefik.name=soemthing # router and services name
-    - traefik.hostname=someApplicationName # overwrite the hostname like overwritten.domain.tld
-    - traefik.webuiport=8080 # overwrite the webUI port like 192.168.1.1:8080
-    - traefik.service.scheme=http # Default to http. The schema the services will use, either http/https. It will be added to the front of the url like scheme://service.yourDomain.tld 
-    - traefik.service=someThingService # overwrite the service that is assigned to the router
-    - traefik.http.disable=true # disable http api, useful if the container is running in the same server as traefik and you want to let the traefik docker provider handle the integration
-    - traefik.middlewares=something,something,something@file,somthingelse@http # comma separated middleware, the server convert it to an array, default to auth
-    - authelia_auth=false # by defaul the server add Authelia as middleware (auth), if you set the middleware label this get overwritten, this label only works when no middleware are defined in the traefik.middleware label
-    - traefik.entrypoints=someEntrypoints,anotheEntrypoints # comma separated entrypoints, the server convert it to an array, default to https
+http:
+  middlewares:
+    default-forward-auth:
+      forwardAuth:
+        address: https://auth.example.com/check
 ```
 
-## Environment variables
+When no file definition exists, the app finds auth containers on Traefik's custom network and generates `default-forward-auth@http` from one of its embedded templates: OAuth2 Proxy first, then Authentik, then Authelia. The three example definitions are in `templates/`. OAuth2 Proxy also gets an internal sign-in service even when its container has `traefik.enable=false`. Authentik and OAuth2 Proxy still need their respective outpost/sign-in **path routers** in your Traefik file. When no auth provider was ever configured, routes work without default auth; the UI makes this visible. When a previously protected default is confirmed unavailable, affected routes are withheld instead of published unprotected. `traefik.forwardauth=false` opts a container out; `traefik.middlewares` supplies an explicit replacement list. The old `authelia_auth=false` remains an alias. Keep TLS defaults on Traefik entrypoints or configure them separately.
 
-You can set this labels in your container to overwrite default values
+The Provider tab shows current auth selection, API freshness, file snapshots and redacted **Generate config** downloads. The snapshots are best-effort reconstructions from `/api/rawdata`, not full backups of source files. Secrets and password hashes are replaced before SQLite storage and must be re-entered in an export. Auth containers on another Docker host/network can use **Generate @file snippet** when their port is published. Traefik must be able to reach the generated address; paste the snippet into your dynamic file directory to override automatic detection. The UI warns about existing same-name file resources.
 
-```yaml
-environment:
-    - DOMAIN=domain.tld # your domain name
-    - DATABASE_URL=file:./db/dev.db # database url, in future it will be use to change the current sqlite database to another database like postgres
+Exports currently cover effective HTTP routers, services and middlewares only; TCP, UDP, TLS certificate material, static options, comments, templates and duplicate file definitions are not reproduced. Unknown resource fields are left out and mark the snapshot unverified. Even a verified snapshot is only a recovery aid: review it and re-enter redacted values before placing it in an empty Traefik file directory. Placing it alongside the original files can create duplicate names.
+
+## Docker servers and labels
+
+Add servers in the UI with `http://host:2375` (Docker socket proxy), `ssh://user@host`, a TLS endpoint with client key/cert/CA paths, or a Unix socket path. Configure a **Traefik-reachable host** and a **browser-reachable host** independently of the Engine API address. Docker publishes container port 80 as host port 8080 with `-p 8080:80`; the generated service URL uses `<traefik-host>:8080`, and the WebUI link uses `<browser-host>:8080`. Loopback-only ports do not provide remote reachability. Docker proxy permissions determine which read and write operations work.
+
+The generator recognizes `traefik.enable=true` or `swag=enable`, `traefik.name`, `traefik.hostname`, `traefik.webuiport` (explicit published **host** port), `traefik.service.scheme`, `traefik.service`, `traefik.http.disable=true`, `traefik.middlewares`, `traefik.entrypoints`, `traefik.forwardauth=false`, and legacy `authelia_auth=false`. Only running containers get generated routers. `net.unraid.docker.webui` with `[IP]` and `[PORT:container-port]` and `traefik.webui.url` help construct browser links; `traefik.webui.host` overrides the browser host. `net.unraid.docker.icon` supplies an HTTPS icon.
+
+Without a WebUI label, a card offers a link only for one unambiguous published TCP port; common non-HTTP service ports (including database ports and the Docker API) are excluded from this fallback. Add `net.unraid.docker.webui` or `traefik.webui.url` to identify an unusual application port explicitly. Docker may report a published port twice for IPv4/IPv6; the UI displays a single mapping.
+
+The **Containers** tab includes running and non-running containers from every enabled server. Use **All**, **Non-running**, or **Running**, the Docker host selector, and name/image search to find a container; stopped or created cards have a **Start** action. Only running containers are included in Traefik's generated routes.
+
+Docker does not provide a general icon field for ordinary containers. Cards try `traefik.icon` first, then Unraid's `net.unraid.docker.icon`, then `com.docker.desktop.extension.icon` when present. These must be HTTPS image URLs. Otherwise cards show a local two-letter fallback. Add `traefik.icon=https://example.com/icon.png` to a container to supply its icon explicitly (recreate the container for a changed Docker label to take effect).
+
+## Verify
+
+```sh
+cargo fmt --check
+cargo clippy --all-targets --features server -- -D warnings
+cargo test --features server
+cargo check --no-default-features --features web --target wasm32-unknown-unknown
 ```
-
-## Notes
-
-The server that the http api provider gets the running containers from needs to have a dockersocket proxy running.

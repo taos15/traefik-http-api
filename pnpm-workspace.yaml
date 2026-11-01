@@ -1,7 +1,0 @@
-onlyBuiltDependencies:
-  - '@prisma/client'
-  - '@prisma/engines'
-  - cpu-features
-  - esbuild
-  - prisma
-  - ssh2

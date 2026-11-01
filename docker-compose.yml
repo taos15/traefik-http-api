@@ -1,11 +1,26 @@
-version: "3"
 services:
-    api:
-        build:
-            context: .
-        environment:
-            - DATABASE_URL=file:./db/dev.db
-            - DOMAIN=yourdomain.tld
-            - AUTHELIAADDRESS=http://192.168.1.1:9091
-        ports:
-            - 4000:4000
+  api:
+    build: .
+    container_name: traefik-http-api
+    networks:
+      - traefik
+    ports:
+      - "4000:4000"
+    volumes:
+      - ./data:/app/data
+      # For SSH: mount a read-only SSH config/key/known_hosts directory as needed.
+      # For Unix socket: mount the socket explicitly and configure its path in the UI.
+      # For mTLS: mount client certificate paths read-only.
+    environment:
+      DOMAIN: ${DOMAIN:?set DOMAIN}
+      DATABASE_URL: sqlite://data/traefik.db
+      ADMIN_BOOTSTRAP_PASSWORD: ${ADMIN_BOOTSTRAP_PASSWORD:-}
+      TRAEFIK_API_URL: ${TRAEFIK_API_URL:-}
+      TRAEFIK_API_USERNAME: ${TRAEFIK_API_USERNAME:-}
+      TRAEFIK_API_PASSWORD: ${TRAEFIK_API_PASSWORD:-}
+      TRAEFIK_API_PASSWORD_FILE: ${TRAEFIK_API_PASSWORD_FILE:-}
+      PROVIDER_TOKEN: ${PROVIDER_TOKEN:-}
+networks:
+  traefik:
+    external: true
+    name: ${TRAEFIK_NETWORK:-proxynet}

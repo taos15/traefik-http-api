@@ -1,0 +1,1 @@
+ALTER TABLE file_snapshots ADD COLUMN status TEXT NOT NULL DEFAULT '{}';
