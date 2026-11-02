@@ -550,6 +550,12 @@ fn runtime_resource_has_error(resource: &Map<String, Value>) -> bool {
 }
 
 fn runtime_middleware_type(key: &str) -> bool {
+    // Public file/HTTP-configurable Traefik OSS v3.7.0 middleware keys,
+    // including current plugin support and the deprecated ipWhiteList key.
+    // Gateway API and ingress-nginx provider-internal fields are intentionally
+    // excluded so unsupported runtime types remain unknown.
+    // https://github.com/traefik/traefik/blob/v3.7.0/pkg/config/dynamic/middlewares.go
+    // https://doc.traefik.io/traefik/v3.7/reference/routing-configuration/http/middlewares/overview/
     matches!(
         key,
         "forwardAuth"
@@ -575,6 +581,8 @@ fn runtime_middleware_type(key: &str) -> bool {
             | "buffering"
             | "circuitBreaker"
             | "passTLSClientCert"
+            | "contentType"
+            | "encodedCharacters"
             | "grpcWeb"
     )
 }
@@ -1198,6 +1206,123 @@ mod tests {
     }
 
     #[test]
+    fn runtime_forward_auth_recognizes_every_supported_non_forward_auth_type() {
+        let cases = [
+            ("addPrefix", json!({"prefix": "/api"})),
+            ("stripPrefix", json!({"prefixes": ["/api"]})),
+            ("stripPrefixRegex", json!({"prefixes": ["^/api/"]})),
+            ("replacePath", json!({"path": "/"})),
+            (
+                "replacePathRegex",
+                json!({"regex": "^/api/(.*)", "replacement": "/$1"}),
+            ),
+            ("chain", json!({"middlewares": []})),
+            ("ipWhiteList", json!({"sourceRange": ["127.0.0.1/32"]})),
+            ("ipAllowList", json!({"sourceRange": ["127.0.0.1/32"]})),
+            ("headers", json!({})),
+            ("encodedCharacters", json!({"allowEncodedSlash": true})),
+            (
+                "errors",
+                json!({"service": "App", "status": ["401"], "query": "/login"}),
+            ),
+            ("rateLimit", json!({"average": 1})),
+            (
+                "redirectRegex",
+                json!({"regex": "^http://(.*)", "replacement": "https://$1"}),
+            ),
+            ("redirectScheme", json!({"scheme": "https"})),
+            ("basicAuth", json!({"users": ["user:hash"]})),
+            ("digestAuth", json!({"users": ["user:realm:hash"]})),
+            ("inFlightReq", json!({"amount": 1})),
+            ("buffering", json!({"maxRequestBodyBytes": 1024})),
+            (
+                "circuitBreaker",
+                json!({"expression": "NetworkErrorRatio() > 0.5"}),
+            ),
+            ("compress", json!({})),
+            ("passTLSClientCert", json!({"pem": true})),
+            ("retry", json!({"attempts": 1})),
+            ("contentType", json!({})),
+            (
+                "grpcWeb",
+                json!({"allowOrigins": ["https://app.example.com"]}),
+            ),
+            ("plugin", json!({"example-plugin": {}})),
+        ];
+        let mut routers = Map::new();
+        let mut middlewares = Map::new();
+        for (index, (middleware_type, config)) in cases.into_iter().enumerate() {
+            let router_name = format!("route-{index}");
+            let middleware_name = format!("middleware-{index}");
+            routers.insert(
+                format!("{router_name}@http"),
+                security_router(Some(json!([middleware_name]))),
+            );
+            middlewares.insert(
+                format!("{middleware_name}@http"),
+                json!({"status": "enabled", (middleware_type): config}),
+            );
+        }
+        let view = runtime_routers(
+            &security_raw(Value::Object(routers), Value::Object(middlewares)),
+            1,
+        );
+        for index in 0..view.routers.len() {
+            assert_eq!(
+                view.routers[&format!("route-{index}")].forward_auth,
+                Some(false),
+                "middleware case {index}"
+            );
+        }
+    }
+
+    #[test]
+    fn runtime_forward_auth_supports_embedded_templates_with_unrelated_middleware() {
+        for kind in ["oauth2proxy", "authentik", "authelia"] {
+            let rendered = crate::auth::render(kind, "auth", "oauth2-proxy").unwrap();
+            for provider in ["file", "http"] {
+                let mut middlewares = Map::new();
+                for (name, value) in rendered["http"]["middlewares"].as_object().unwrap() {
+                    let mut value = value.clone();
+                    value["status"] = json!("enabled");
+                    middlewares.insert(format!("{name}@{provider}"), value);
+                }
+                middlewares.insert(
+                    format!("content-type@{provider}"),
+                    json!({"status": "enabled", "contentType": {}}),
+                );
+                middlewares.insert(
+                    format!("encoded-characters@{provider}"),
+                    json!({"status": "enabled", "encodedCharacters": {"allowEncodedSlash": true}}),
+                );
+                middlewares.insert(
+                    format!("default@{provider}"),
+                    json!({
+                        "status": "enabled",
+                        "chain": {"middlewares": ["content-type", "encoded-characters"]}
+                    }),
+                );
+                let mut raw = security_raw(
+                    json!({"App@http": security_router(Some(json!([
+                        format!("default@{provider}"),
+                        format!("default-forward-auth@{provider}")
+                    ])))}),
+                    Value::Object(middlewares),
+                );
+                raw["services"][format!("oauth2-proxy@{provider}")] = json!({
+                    "status": "enabled",
+                    "loadBalancer": {"servers": [{"url": "http://auth:4180"}]}
+                });
+                assert_eq!(
+                    runtime_routers(&raw, 1).routers["App"].forward_auth,
+                    Some(true),
+                    "{kind}@{provider}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn runtime_forward_auth_unknown_for_broken_or_cyclic_dependencies() {
         let raw = security_raw(
             json!({
@@ -1315,6 +1440,17 @@ mod tests {
             assert_eq!(view.routers[name].forward_auth, None, "{name}");
         }
         assert_eq!(view.routers["EmptyError"].forward_auth, Some(true));
+    }
+
+    #[test]
+    fn runtime_forward_auth_remains_unknown_for_unsupported_future_types() {
+        let raw = security_raw(
+            json!({"App@http": security_router(Some(json!(["future@file"])))}),
+            json!({
+                "future@file": {"status": "enabled", "futureBuiltIn": {}}
+            }),
+        );
+        assert_eq!(runtime_routers(&raw, 1).routers["App"].forward_auth, None);
     }
 
     #[test]
