@@ -441,6 +441,16 @@ async fn discover_server(
     })?))
 }
 
+async fn discover_local_networks(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> ApiResult<Json<ServerDiscovery>> {
+    require_login(&state, &headers).await?;
+    Ok(Json(docker::discover_local().await.map_err(|error| {
+        ApiError(StatusCode::SERVICE_UNAVAILABLE, error.to_string())
+    })?))
+}
+
 async fn container_webui_urls(
     db: &SqlitePool,
 ) -> anyhow::Result<HashMap<(String, String), Option<String>>> {
@@ -1486,6 +1496,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/v1/servers", get(list_servers).post(create_server))
         .route("/api/v1/servers/test", post(test_server))
         .route("/api/v1/servers/discover", post(discover_server))
+        .route("/api/v1/networks/local", get(discover_local_networks))
         .route(
             "/api/v1/servers/{id}",
             axum::routing::put(update_server).delete(delete_server),
@@ -2323,6 +2334,16 @@ mod backend_tests {
                 .as_deref()
                 .unwrap()
                 .contains("pending refresh")
+        );
+    }
+
+    #[tokio::test]
+    async fn local_network_discovery_handler_requires_login() {
+        let state = test_state(memory_db().await);
+        let result = discover_local_networks(State(state), HeaderMap::new()).await;
+        assert!(
+            matches!(result, Err(ApiError(StatusCode::UNAUTHORIZED, _))),
+            "expected UNAUTHORIZED, got {result:?}"
         );
     }
 

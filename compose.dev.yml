@@ -5,6 +5,12 @@ services:
       - "4000:4000"
     volumes:
       - ./data:/app/data
+      - type: bind
+        source: /var/run/docker.sock
+        target: /var/run/docker.sock
+        read_only: true
+        bind:
+          create_host_path: false
     environment:
       DOMAIN: ${DOMAIN:?set DOMAIN}
       DATABASE_URL: sqlite://data/traefik.db

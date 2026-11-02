@@ -8,8 +8,13 @@ services:
       - "4000:4000"
     volumes:
       - ./data:/app/data
+      - type: bind
+        source: /var/run/docker.sock
+        target: /var/run/docker.sock
+        read_only: true
+        bind:
+          create_host_path: false
       # For SSH: mount a read-only SSH config/key/known_hosts directory as needed.
-      # For Unix socket: mount the socket explicitly and configure its path in the UI.
       # For mTLS: mount client certificate paths read-only.
     environment:
       DOMAIN: ${DOMAIN:?set DOMAIN}
