@@ -375,7 +375,13 @@ pub fn generate(
             json!({"loadBalancer":{"servers":[{"url":upstream}]}}),
         );
     }
-    Ok(json!({"http":{"routers":routers,"services":services,"middlewares":auth_middlewares}}))
+    let mut http = json!({"routers": routers, "services": services});
+    if !auth_middlewares.is_empty() {
+        http.as_object_mut()
+            .expect("HTTP configuration is an object")
+            .insert("middlewares".into(), Value::Object(auth_middlewares));
+    }
+    Ok(json!({"http": http}))
 }
 
 pub fn route_excluded_reason(c: &Container) -> Option<&'static str> {
@@ -448,6 +454,68 @@ mod tests {
             AuthOutput::from_reference(auth),
         )
     }
+    #[test]
+    fn omits_middlewares_key_when_no_auth_middlewares_are_defined() {
+        let config = generate(&[], &[], "example.test", None).unwrap();
+        assert!(
+            !config["http"]
+                .as_object()
+                .unwrap()
+                .contains_key("middlewares")
+        );
+
+        let server = network_server();
+        let mut container = network_container();
+        container
+            .labels
+            .insert("traefik.middlewares".into(), "external@file".into());
+        let config = generate(
+            &[container],
+            std::slice::from_ref(&server),
+            "example.test",
+            None,
+        )
+        .unwrap();
+        assert!(
+            !config["http"]
+                .as_object()
+                .unwrap()
+                .contains_key("middlewares")
+        );
+        assert_eq!(
+            config["http"]["routers"]["App"]["middlewares"],
+            json!(["external@file"])
+        );
+    }
+
+    #[test]
+    fn preserves_nonempty_auth_middleware_definitions() {
+        let middlewares = json!({
+            "forward-auth": {
+                "forwardAuth": {
+                    "address": "http://auth:9000/api/authz/forward-auth"
+                }
+            }
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+        let config = super::generate(
+            &[],
+            &[],
+            "example.test",
+            AuthOutput {
+                reference: None,
+                required: false,
+                containers: HashSet::new(),
+                middlewares: middlewares.clone(),
+                services: Default::default(),
+            },
+        )
+        .unwrap();
+        assert_eq!(config["http"]["middlewares"], Value::Object(middlewares));
+    }
+
     #[test]
     fn maps_unraid_port_and_keeps_api_separate() {
         let server = DockerServer {
