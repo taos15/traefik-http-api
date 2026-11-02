@@ -191,9 +191,13 @@ Each container card shows its Docker state separately from its Traefik routing s
 
 These statuses cover routes managed by this app, not routes independently created through Traefik's other providers. Confirmation requires access to Traefik's internal API; see [Traefik API settings](#parameters) below.
 
+**Routed** is green with a lock when a recent Traefik observation confirms an enabled ForwardAuth middleware on that route, including through middleware chains. It is amber without a lock when ForwardAuth is absent or cannot be confirmed; the tooltip distinguishes those cases. The lock does not test the authentication service or a login flow, and does not indicate HTTPS.
+
+**Route** links to the Traefik hostname independently of the **Browser URL**. It uses HTTP or HTTPS according to observed route TLS, defaulting to HTTPS when that information is unavailable. The link uses the scheme's standard port and does not imply application reachability, even when a generated route is unconfirmed.
+
 The card's browser link is marked **Automatic** or **Custom**. Choose **Edit URL** to save a full `http://` or `https://` address, including an optional port, path, query, or fragment. Embedded usernames/passwords and other URL schemes are not accepted. You can set a custom URL even when automatic detection cannot produce a link.
 
-**Reset to automatic** removes the saved override and restores the existing label/server-based link. Editing the browser URL changes only **Open WebUI**; it does not change Docker labels, published ports, or Traefik routes. Custom URLs are stored in the application's database per Docker server and container ID, survive refreshes and app restarts, and take precedence over automatic browser-link settings. A recreated container with a new ID starts in automatic mode.
+**Reset to automatic** removes the saved override and restores the existing label/server-based link. Editing the browser URL changes only the card's browser link; it does not change Docker labels, published ports, or Traefik routes. Custom URLs are stored in the application's database per Docker server and container ID, survive refreshes and app restarts, and take precedence over automatic browser-link settings. A recreated container with a new ID starts in automatic mode.
 
 ## Container labels
 

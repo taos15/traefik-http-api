@@ -14,6 +14,10 @@ pub struct RuntimeRouter {
     pub status: String,
     pub rule: String,
     pub service: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub forward_auth: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tls: Option<bool>,
 }
 
 #[derive(Clone, Default, Serialize, Deserialize)]
@@ -519,6 +523,186 @@ pub fn service_fingerprint(service: &Value) -> Option<String> {
     Some(urls.join(","))
 }
 
+fn runtime_resource_name(reference: &str, provider: &str) -> Option<String> {
+    if reference.is_empty() || provider.is_empty() {
+        return None;
+    }
+    if let Some((name, reference_provider)) = reference.rsplit_once('@') {
+        if name.is_empty() || name.contains('@') || reference_provider.is_empty() {
+            return None;
+        }
+        Some(reference.to_owned())
+    } else {
+        Some(format!("{reference}@{provider}"))
+    }
+}
+
+const MAX_RUNTIME_MIDDLEWARE_DEPTH: usize = 64;
+
+fn runtime_resource_has_error(resource: &Map<String, Value>) -> bool {
+    match resource.get("error") {
+        None | Some(Value::Null) => false,
+        Some(Value::String(error)) => !error.is_empty(),
+        Some(Value::Array(errors)) => !errors.is_empty(),
+        Some(Value::Object(error)) => !error.is_empty(),
+        Some(_) => true,
+    }
+}
+
+fn runtime_middleware_type(key: &str) -> bool {
+    matches!(
+        key,
+        "forwardAuth"
+            | "chain"
+            | "errors"
+            | "headers"
+            | "basicAuth"
+            | "digestAuth"
+            | "ipAllowList"
+            | "ipWhiteList"
+            | "plugin"
+            | "redirectScheme"
+            | "redirectRegex"
+            | "replacePath"
+            | "replacePathRegex"
+            | "stripPrefix"
+            | "stripPrefixRegex"
+            | "addPrefix"
+            | "rateLimit"
+            | "inFlightReq"
+            | "compress"
+            | "retry"
+            | "buffering"
+            | "circuitBreaker"
+            | "passTLSClientCert"
+            | "grpcWeb"
+    )
+}
+
+fn runtime_middleware_forward_auth(
+    middlewares: &Map<String, Value>,
+    services: Option<&Map<String, Value>>,
+    reference: &str,
+    provider: &str,
+    depth: usize,
+    visiting: &mut BTreeSet<String>,
+) -> Option<bool> {
+    if depth >= MAX_RUNTIME_MIDDLEWARE_DEPTH {
+        return None;
+    }
+    let full_name = runtime_resource_name(reference, provider)?;
+    if !visiting.insert(full_name.clone()) {
+        return None;
+    }
+    let provider = full_name
+        .rsplit_once('@')
+        .map(|(_, provider)| provider)
+        .unwrap_or(provider);
+    let result = (|| {
+        let middleware = middlewares.get(&full_name)?.as_object()?;
+        if middleware.get("status").and_then(Value::as_str) != Some("enabled")
+            || runtime_resource_has_error(middleware)
+        {
+            return None;
+        }
+        if middleware.keys().any(|key| {
+            !matches!(
+                key.as_str(),
+                "status" | "usedBy" | "using" | "error" | "type"
+            ) && !runtime_middleware_type(key)
+        }) {
+            return None;
+        }
+        let mut types = middleware
+            .iter()
+            .filter(|(key, _)| runtime_middleware_type(key));
+        let (middleware_type, config) = types.next()?;
+        if types.next().is_some() {
+            return None;
+        }
+        let config = config.as_object()?;
+
+        match middleware_type.as_str() {
+            "forwardAuth" => {
+                let address = config.get("address")?.as_str()?;
+                (!address.trim().is_empty()).then_some(true)
+            }
+            "errors" => {
+                // `errors` is a middleware type. Its service dependency is checked
+                // without confusing it with Traefik's singular runtime error metadata.
+                let service = config.get("service")?.as_str()?;
+                let service = runtime_resource_name(service, provider)?;
+                let service = services?.get(&service)?.as_object()?;
+                if service.get("status").and_then(Value::as_str) != Some("enabled")
+                    || runtime_resource_has_error(service)
+                {
+                    return None;
+                }
+                Some(false)
+            }
+            "chain" => {
+                let references = config.get("middlewares")?.as_array()?;
+                let mut protected = false;
+                for reference in references {
+                    let reference = reference.as_str()?;
+                    match runtime_middleware_forward_auth(
+                        middlewares,
+                        services,
+                        reference,
+                        provider,
+                        depth + 1,
+                        visiting,
+                    ) {
+                        Some(value) => protected |= value,
+                        None => return None,
+                    }
+                }
+                Some(protected)
+            }
+            _ => Some(false),
+        }
+    })();
+    visiting.remove(&full_name);
+    result
+}
+
+fn router_forward_auth(raw: &Value, router: &Value, status: &str) -> Option<bool> {
+    let router = router.as_object()?;
+    if status != "enabled" || runtime_resource_has_error(router) {
+        return None;
+    }
+    let references = match router.get("middlewares") {
+        None => return Some(false),
+        Some(value) => value.as_array()?,
+    };
+    if references.is_empty() {
+        return Some(false);
+    }
+    let middlewares = raw.get("middlewares")?.as_object()?;
+    let services = raw.get("services").and_then(Value::as_object);
+    let mut protected = false;
+    for reference in references {
+        let reference = reference.as_str()?;
+        protected |= runtime_middleware_forward_auth(
+            middlewares,
+            services,
+            reference,
+            "http",
+            0,
+            &mut BTreeSet::new(),
+        )?;
+    }
+    Some(protected)
+}
+
+fn router_tls(router: &Value) -> Option<bool> {
+    match router.as_object()?.get("tls") {
+        None | Some(Value::Null) => Some(false),
+        Some(Value::Object(_)) => Some(true),
+        Some(_) => None,
+    }
+}
+
 pub fn runtime_routers(raw: &Value, time: i64) -> RuntimeView {
     let mut routers = HashMap::new();
     let mut services = HashMap::new();
@@ -541,6 +725,8 @@ pub fn runtime_routers(raw: &Value, time: i64) -> RuntimeView {
                     status: status.to_owned(),
                     rule: rule.to_owned(),
                     service: service.to_owned(),
+                    forward_auth: router_forward_auth(raw, value, status),
+                    tls: router_tls(value),
                 },
             );
             if status == "enabled" {
@@ -584,12 +770,14 @@ pub async fn save_runtime(db: &SqlitePool, view: &RuntimeView) -> Result<()> {
     let fetched_at = view.fetched_at.unwrap_or(0);
     for (name, router) in &view.routers {
         sqlx::query(
-            "INSERT INTO runtime_routers(name,status,rule,service,fetched_at) VALUES(?,?,?,?,?)",
+            "INSERT INTO runtime_routers(name,status,rule,service,forward_auth,tls,fetched_at) VALUES(?,?,?,?,?,?,?)",
         )
         .bind(name)
         .bind(&router.status)
         .bind(&router.rule)
         .bind(&router.service)
+        .bind(router.forward_auth.map(i64::from))
+        .bind(router.tls.map(i64::from))
         .bind(fetched_at)
         .execute(&mut *tx)
         .await?;
@@ -620,9 +808,10 @@ pub async fn load_runtime(db: &SqlitePool) -> Result<RuntimeView> {
             .fetch_optional(&mut *tx)
             .await?;
     let (fetched_at, api_reachable) = meta.unwrap_or((0, 0));
-    let router_rows = sqlx::query("SELECT name, status, rule, service FROM runtime_routers")
-        .fetch_all(&mut *tx)
-        .await?;
+    let router_rows =
+        sqlx::query("SELECT name, status, rule, service, forward_auth, tls FROM runtime_routers")
+            .fetch_all(&mut *tx)
+            .await?;
     let mut routers = HashMap::new();
     for row in router_rows {
         routers.insert(
@@ -631,6 +820,10 @@ pub async fn load_runtime(db: &SqlitePool) -> Result<RuntimeView> {
                 status: row.get("status"),
                 rule: row.get("rule"),
                 service: row.get::<Option<String>, _>("service").unwrap_or_default(),
+                forward_auth: row
+                    .get::<Option<i64>, _>("forward_auth")
+                    .map(|value| value != 0),
+                tls: row.get::<Option<i64>, _>("tls").map(|value| value != 0),
             },
         );
     }
@@ -887,5 +1080,372 @@ mod tests {
             .remove("status");
         let view = runtime_routers(&raw, 1);
         assert!(!view.services.contains_key("App"));
+    }
+
+    fn security_raw(routers: Value, middlewares: Value) -> Value {
+        json!({
+            "routers": routers,
+            "middlewares": middlewares,
+            "services": {
+                "App@http": {
+                    "status": "enabled",
+                    "loadBalancer": {"servers": [{"url": "http://app:80"}]}
+                }
+            }
+        })
+    }
+
+    fn security_router(middlewares: Option<Value>) -> Value {
+        let mut router = json!({
+            "status": "enabled",
+            "rule": "Host(`app.example.com`)",
+            "service": "App"
+        });
+        if let Some(middlewares) = middlewares {
+            router["middlewares"] = middlewares;
+        }
+        router
+    }
+
+    #[test]
+    fn runtime_forward_auth_supports_default_and_provider_relative_http_refs() {
+        let raw = security_raw(
+            json!({"App@http": security_router(Some(json!(["default-forward-auth"])))}),
+            json!({
+                "default-forward-auth@http": {
+                    "status": "enabled",
+                    "forwardAuth": {"address": "http://auth:4180/verify?token=not-persisted"}
+                }
+            }),
+        );
+        let view = runtime_routers(&raw, 1);
+        assert_eq!(view.routers["App"].forward_auth, Some(true));
+        assert!(
+            !serde_json::to_string(&view)
+                .unwrap()
+                .contains("not-persisted")
+        );
+    }
+
+    #[test]
+    fn runtime_forward_auth_resolves_explicit_providers_and_nested_chains() {
+        let raw = security_raw(
+            json!({
+                "App@http": security_router(Some(json!(["default-forward-auth@file"]))),
+                "Other@http": {
+                    "status": "enabled",
+                    "rule": "Host(`other.example.com`)",
+                    "service": "App",
+                    "middlewares": ["arbitrary-auth-name@custom"]
+                },
+                "Chain@http": {
+                    "status": "enabled",
+                    "rule": "Host(`chain.example.com`)",
+                    "service": "App",
+                    "middlewares": ["entry"]
+                }
+            }),
+            json!({
+                "default-forward-auth@file": {
+                    "status": "enabled",
+                    "chain": {"middlewares": ["headers", "verify"]}
+                },
+                "headers@file": {"status": "enabled", "headers": {}},
+                "verify@file": {
+                    "status": "enabled",
+                    "forwardAuth": {"address": "http://auth/verify"}
+                },
+                "arbitrary-auth-name@custom": {
+                    "status": "enabled",
+                    "forwardAuth": {"address": "http://custom/verify"}
+                },
+                "entry@http": {
+                    "status": "enabled",
+                    "chain": {"middlewares": ["default-forward-auth"]}
+                },
+                "default-forward-auth@http": {
+                    "status": "enabled",
+                    "forwardAuth": {"address": "http://auth/verify"}
+                }
+            }),
+        );
+        let view = runtime_routers(&raw, 1);
+        assert_eq!(view.routers["App"].forward_auth, Some(true));
+        assert_eq!(view.routers["Other"].forward_auth, Some(true));
+        assert_eq!(view.routers["Chain"].forward_auth, Some(true));
+    }
+
+    #[test]
+    fn runtime_forward_auth_false_for_no_middleware_opt_out_and_non_auth() {
+        let raw = security_raw(
+            json!({
+                "Absent@http": {
+                    "status": "enabled",
+                    "rule": "Host(`absent.example.com`)",
+                    "service": "App"
+                },
+                "Empty@http": security_router(Some(json!([]))),
+                "Headers@http": security_router(Some(json!(["security-headers"])))
+            }),
+            json!({
+                "security-headers@http": {"status": "enabled", "headers": {}}
+            }),
+        );
+        let view = runtime_routers(&raw, 1);
+        assert_eq!(view.routers["Absent"].forward_auth, Some(false));
+        assert_eq!(view.routers["Empty"].forward_auth, Some(false));
+        assert_eq!(view.routers["Headers"].forward_auth, Some(false));
+    }
+
+    #[test]
+    fn runtime_forward_auth_unknown_for_broken_or_cyclic_dependencies() {
+        let raw = security_raw(
+            json!({
+                "Missing@http": security_router(Some(json!(["missing@file"]))),
+                "Disabled@http": security_router(Some(json!(["disabled"]))),
+                "Malformed@http": security_router(Some(json!(["malformed"]))),
+                "MalformedAuth@http": security_router(Some(json!(["malformed-auth"]))),
+                "EmptyMiddleware@http": security_router(Some(json!(["empty-middleware"]))),
+                "Cycle@http": security_router(Some(json!(["cycle-a"]))),
+                "BadReference@http": security_router(Some(json!([42]))),
+                "DisabledRouter@http": {
+                    "status": "disabled",
+                    "rule": "Host(`disabled.example.com`)",
+                    "service": "App",
+                    "middlewares": ["auth"]
+                }
+            }),
+            json!({
+                "disabled@http": {
+                    "status": "disabled",
+                    "forwardAuth": {"address": "http://auth/verify"}
+                },
+                "malformed@http": {
+                    "status": "enabled",
+                    "chain": {"middlewares": "auth"}
+                },
+                "malformed-auth@http": {
+                    "status": "enabled",
+                    "forwardAuth": {"address": ""}
+                },
+                "empty-middleware@http": {"status": "enabled"},
+                "cycle-a@http": {
+                    "status": "enabled",
+                    "chain": {"middlewares": ["cycle-b"]}
+                },
+                "cycle-b@http": {
+                    "status": "enabled",
+                    "chain": {"middlewares": ["cycle-a"]}
+                },
+                "auth@http": {
+                    "status": "enabled",
+                    "forwardAuth": {"address": "http://auth/verify"}
+                }
+            }),
+        );
+        let view = runtime_routers(&raw, 1);
+        for name in [
+            "Missing",
+            "Disabled",
+            "Malformed",
+            "MalformedAuth",
+            "EmptyMiddleware",
+            "Cycle",
+            "BadReference",
+            "DisabledRouter",
+        ] {
+            assert_eq!(view.routers[name].forward_auth, None, "{name}");
+        }
+    }
+
+    #[test]
+    fn runtime_forward_auth_rejects_error_metadata_and_ambiguous_middleware() {
+        let mut raw = security_raw(
+            json!({
+                "RouterError@http": {
+                    "status": "enabled",
+                    "error": "router is broken",
+                    "rule": "Host(`router-error.example.com`)",
+                    "service": "App"
+                },
+                "MiddlewareError@http": security_router(Some(json!(["auth-error"]))),
+                "ServiceError@http": security_router(Some(json!(["signin@file"]))),
+                "ConflictingTypes@http": security_router(Some(json!(["conflict"]))),
+                "MalformedHeaders@http": security_router(Some(json!(["bad-headers"]))),
+                "UnknownType@http": security_router(Some(json!(["future-type"]))),
+                "EmptyError@http": security_router(Some(json!(["empty-error"])))
+            }),
+            json!({
+                "auth-error@http": {
+                    "status": "enabled",
+                    "error": "middleware is broken",
+                    "forwardAuth": {"address": "http://auth/verify"}
+                },
+                "signin@file": {
+                    "status": "enabled",
+                    "errors": {"service": "oauth", "status": ["401"]}
+                },
+                "conflict@http": {
+                    "status": "enabled",
+                    "forwardAuth": {"address": "http://auth/verify"},
+                    "headers": {}
+                },
+                "bad-headers@http": {"status": "enabled", "headers": null},
+                "future-type@http": {"status": "enabled", "futureType": {}},
+                "empty-error@http": {
+                    "status": "enabled",
+                    "error": "",
+                    "forwardAuth": {"address": "http://auth/verify"}
+                }
+            }),
+        );
+        raw["services"]["oauth@file"] = json!({
+            "status": "enabled",
+            "error": "service is broken"
+        });
+        let view = runtime_routers(&raw, 1);
+        for name in [
+            "RouterError",
+            "MiddlewareError",
+            "ServiceError",
+            "ConflictingTypes",
+            "MalformedHeaders",
+            "UnknownType",
+        ] {
+            assert_eq!(view.routers[name].forward_auth, None, "{name}");
+        }
+        assert_eq!(view.routers["EmptyError"].forward_auth, Some(true));
+    }
+
+    #[test]
+    fn runtime_forward_auth_chain_depth_is_bounded() {
+        let mut middlewares = Map::new();
+        for index in 0..=MAX_RUNTIME_MIDDLEWARE_DEPTH {
+            let value = if index == MAX_RUNTIME_MIDDLEWARE_DEPTH {
+                json!({
+                    "status": "enabled",
+                    "forwardAuth": {"address": "http://auth/verify"}
+                })
+            } else {
+                json!({
+                    "status": "enabled",
+                    "chain": {"middlewares": [format!("m{}", index + 1)]}
+                })
+            };
+            middlewares.insert(format!("m{index}@http"), value);
+        }
+        let raw = security_raw(
+            json!({"App@http": security_router(Some(json!(["m0"])))}),
+            Value::Object(middlewares),
+        );
+        assert_eq!(runtime_routers(&raw, 1).routers["App"].forward_auth, None);
+    }
+
+    #[test]
+    fn runtime_errors_middleware_requires_enabled_service() {
+        let mut raw = security_raw(
+            json!({
+                "Errors@http": security_router(Some(json!(["signin@file"]))),
+                "Missing@http": security_router(Some(json!(["missing-service@file"])))
+            }),
+            json!({
+                "signin@file": {
+                    "status": "enabled",
+                    "errors": {"service": "oauth", "status": ["401"], "query": "/login"}
+                },
+                "missing-service@file": {
+                    "status": "enabled",
+                    "errors": {"service": "absent", "status": ["401"]}
+                }
+            }),
+        );
+        raw["services"]["oauth@file"] = json!({"status": "enabled"});
+        let view = runtime_routers(&raw, 1);
+        assert_eq!(view.routers["Errors"].forward_auth, Some(false));
+        assert_eq!(view.routers["Missing"].forward_auth, None);
+
+        raw["services"]["oauth@file"]["status"] = json!("disabled");
+        let view = runtime_routers(&raw, 2);
+        assert_eq!(view.routers["Errors"].forward_auth, None);
+    }
+
+    #[test]
+    fn runtime_tls_is_true_false_or_unknown() {
+        let raw = security_raw(
+            json!({
+                "Tls@http": {
+                    "status": "enabled",
+                    "rule": "Host(`tls.example.com`)",
+                    "service": "App",
+                    "tls": {}
+                },
+                "Plain@http": security_router(None),
+                "Null@http": {
+                    "status": "enabled",
+                    "rule": "Host(`null.example.com`)",
+                    "service": "App",
+                    "tls": null
+                },
+                "Malformed@http": {
+                    "status": "enabled",
+                    "rule": "Host(`malformed.example.com`)",
+                    "service": "App",
+                    "tls": "enabled"
+                },
+                "Broken@http": null
+            }),
+            json!({}),
+        );
+        let view = runtime_routers(&raw, 1);
+        assert_eq!(view.routers["Tls"].tls, Some(true));
+        assert_eq!(view.routers["Plain"].tls, Some(false));
+        assert_eq!(view.routers["Null"].tls, Some(false));
+        assert_eq!(view.routers["Malformed"].tls, None);
+        assert_eq!(view.routers["Broken"].tls, None);
+    }
+
+    #[tokio::test]
+    async fn runtime_security_fields_roundtrip_and_old_rows_remain_unknown() {
+        let db = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::migrate!().run(&db).await.unwrap();
+        let router = |forward_auth, tls| RuntimeRouter {
+            status: "enabled".into(),
+            rule: "Host(`app.example.com`)".into(),
+            service: "App".into(),
+            forward_auth,
+            tls,
+        };
+        let view = RuntimeView {
+            routers: HashMap::from([
+                ("Protected".into(), router(Some(true), Some(true))),
+                ("Open".into(), router(Some(false), Some(false))),
+                ("Unknown".into(), router(None, None)),
+            ]),
+            services: HashMap::new(),
+            fetched_at: Some(123),
+            api_reachable: true,
+        };
+        save_runtime(&db, &view).await.unwrap();
+        let loaded = load_runtime(&db).await.unwrap();
+        assert_eq!(loaded.routers["Protected"].forward_auth, Some(true));
+        assert_eq!(loaded.routers["Protected"].tls, Some(true));
+        assert_eq!(loaded.routers["Open"].forward_auth, Some(false));
+        assert_eq!(loaded.routers["Open"].tls, Some(false));
+        assert_eq!(loaded.routers["Unknown"].forward_auth, None);
+        assert_eq!(loaded.routers["Unknown"].tls, None);
+
+        sqlx::query(
+            "INSERT INTO runtime_routers(name,status,rule,service,fetched_at) VALUES('Legacy','enabled','Host(`old.example.com`)','App',123)",
+        )
+        .execute(&db)
+        .await
+        .unwrap();
+        let loaded = load_runtime(&db).await.unwrap();
+        assert_eq!(loaded.routers["Legacy"].forward_auth, None);
+        assert_eq!(loaded.routers["Legacy"].tls, None);
     }
 }

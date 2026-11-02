@@ -590,6 +590,8 @@ fn container_routing(
             reason: Some(reason.into()),
             hostname,
             checked_at: runtime.fetched_at,
+            forward_auth: None,
+            tls: None,
         }
     }
 
@@ -600,6 +602,8 @@ fn container_routing(
                 reason: Some("Container stopped".into()),
                 hostname: None,
                 checked_at: None,
+                forward_auth: None,
+                tls: None,
             };
         }
         return ContainerRouting {
@@ -607,6 +611,8 @@ fn container_routing(
             reason: Some("Provider snapshot not yet available".into()),
             hostname: None,
             checked_at: None,
+            forward_auth: None,
+            tls: None,
         };
     }
 
@@ -641,6 +647,8 @@ fn container_routing(
                 reason: Some("Container stopped".into()),
                 hostname: None,
                 checked_at: None,
+                forward_auth: None,
+                tls: None,
             },
         };
     }
@@ -651,6 +659,8 @@ fn container_routing(
             reason: Some(reason.into()),
             hostname: None,
             checked_at: None,
+            forward_auth: None,
+            tls: None,
         };
     }
 
@@ -660,6 +670,8 @@ fn container_routing(
             reason: Some("Route not generated (check configuration)".into()),
             hostname: None,
             checked_at: None,
+            forward_auth: None,
+            tls: None,
         };
     };
 
@@ -671,6 +683,8 @@ fn container_routing(
             reason: Some("Traefik API is unreachable".into()),
             hostname,
             checked_at: runtime.fetched_at,
+            forward_auth: None,
+            tls: None,
         };
     }
 
@@ -685,6 +699,8 @@ fn container_routing(
             reason: Some("Traefik API data is stale".into()),
             hostname,
             checked_at: runtime.fetched_at,
+            forward_auth: None,
+            tls: None,
         };
     }
 
@@ -694,6 +710,8 @@ fn container_routing(
             reason: Some("Generated route not yet observed in Traefik".into()),
             hostname,
             checked_at: runtime.fetched_at,
+            forward_auth: None,
+            tls: None,
         };
     };
 
@@ -703,6 +721,8 @@ fn container_routing(
             reason: Some(format!("Router status is {}", router.status)),
             hostname,
             checked_at: runtime.fetched_at,
+            forward_auth: None,
+            tls: None,
         };
     }
 
@@ -716,6 +736,8 @@ fn container_routing(
             reason: Some("Runtime router points to a different service".into()),
             hostname,
             checked_at: runtime.fetched_at,
+            forward_auth: None,
+            tls: None,
         };
     }
 
@@ -725,6 +747,8 @@ fn container_routing(
             reason: Some("Runtime router rule does not match generated rule".into()),
             hostname,
             checked_at: runtime.fetched_at,
+            forward_auth: None,
+            tls: None,
         };
     }
 
@@ -738,6 +762,8 @@ fn container_routing(
             reason: Some("Runtime service upstream does not match generated service".into()),
             hostname,
             checked_at: runtime.fetched_at,
+            forward_auth: None,
+            tls: None,
         };
     }
 
@@ -746,6 +772,8 @@ fn container_routing(
         reason: None,
         hostname,
         checked_at: runtime.fetched_at,
+        forward_auth: router.forward_auth,
+        tls: router.tls,
     }
 }
 
@@ -1612,6 +1640,8 @@ mod backend_tests {
                     status: "enabled".into(),
                     rule: "Host(`app.example.com`) && PathPrefix(`/`)".into(),
                     service: "App".into(),
+                    forward_auth: Some(false),
+                    tls: Some(true),
                 },
             )]),
             services,
@@ -1943,6 +1973,26 @@ mod backend_tests {
         assert_eq!(r.hostname.as_deref(), Some("app.example.com"));
         assert_eq!(r.checked_at, Some(100));
         assert!(r.reason.is_none());
+        assert_eq!(r.forward_auth, Some(false));
+        assert_eq!(r.tls, Some(true));
+    }
+
+    #[test]
+    fn routing_routed_propagates_auth_true_and_unknown() {
+        let c = test_container();
+        let snapshot = snapshot_config();
+        let info = route_info("App", &snapshot);
+        let routes = routes_for(&c, info);
+        for (forward_auth, tls) in [(Some(true), Some(false)), (None, None)] {
+            let mut runtime = enabled_runtime(100, &snapshot);
+            let router = runtime.routers.get_mut("App").unwrap();
+            router.forward_auth = forward_auth;
+            router.tls = tls;
+            let r = container_routing(&c, &snapshot, &routes, &HashMap::new(), &runtime, 100);
+            assert_eq!(r.state, "routed");
+            assert_eq!(r.forward_auth, forward_auth);
+            assert_eq!(r.tls, tls);
+        }
     }
 
     #[test]
@@ -1958,6 +2008,8 @@ mod backend_tests {
         let r = container_routing(&c, &snapshot, &routes, &HashMap::new(), &runtime, 100);
         assert_eq!(r.state, "unconfirmed");
         assert!(r.reason.as_deref().unwrap().contains("unreachable"));
+        assert_eq!(r.forward_auth, None);
+        assert_eq!(r.tls, None);
     }
 
     #[test]
@@ -1971,6 +2023,8 @@ mod backend_tests {
         let r = container_routing(&c, &snapshot, &routes, &HashMap::new(), &runtime, 100);
         assert_eq!(r.state, "unconfirmed");
         assert!(r.reason.as_deref().unwrap().contains("stale"));
+        assert_eq!(r.forward_auth, None);
+        assert_eq!(r.tls, None);
     }
 
     #[test]
@@ -1996,6 +2050,8 @@ mod backend_tests {
                     status: "disabled".into(),
                     rule: "Host(`app.example.com`) && PathPrefix(`/`)".into(),
                     service: "App".into(),
+                    forward_auth: None,
+                    tls: None,
                 },
             )]),
             services: HashMap::new(),
@@ -2050,6 +2106,8 @@ mod backend_tests {
                 status: "enabled".into(),
                 rule: "Host(`oldapp.example.com`)".into(),
                 service: "App".into(),
+                forward_auth: None,
+                tls: None,
             },
         );
         let r = container_routing(&c, &snapshot, &routes, &HashMap::new(), &runtime, 100);
@@ -2076,6 +2134,8 @@ mod backend_tests {
                 status: "enabled".into(),
                 rule: "Host(`app.example.com`) && PathPrefix(`/`)".into(),
                 service: "OtherApp".into(),
+                forward_auth: None,
+                tls: None,
             },
         );
         let r = container_routing(&c, &snapshot, &routes, &HashMap::new(), &runtime, 100);
@@ -2171,6 +2231,8 @@ mod backend_tests {
                     status: "enabled".into(),
                     rule: "Host(`app.example.com`) && PathPrefix(`/`)".into(),
                     service: "App".into(),
+                    forward_auth: Some(false),
+                    tls: Some(true),
                 },
             )]),
             services: traefik::service_fingerprint(
@@ -2192,6 +2254,8 @@ mod backend_tests {
             "Host(`app.example.com`) && PathPrefix(`/`)"
         );
         assert_eq!(loaded.routers["App"].service, "App");
+        assert_eq!(loaded.routers["App"].forward_auth, Some(false));
+        assert_eq!(loaded.routers["App"].tls, Some(true));
     }
 
     #[tokio::test]

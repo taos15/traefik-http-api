@@ -64,6 +64,8 @@ For routing changes, also verify a real Docker port mapping: a container with `8
 
 For container-card changes, exercise enabled/missing/error router observations and unavailable/stale Traefik API data without equating generated configuration with a confirmed route. Verify browser URL save/cancel/reset, invalid URL feedback, refresh/restart persistence, and isolation between Docker servers and container IDs. Check cards at desktop and narrow viewport widths. Browser overrides must never affect provider generation or Docker labels.
 
+For the ForwardAuth badge, cover direct and chained middleware references across providers, explicit overrides, no-auth lists, missing/disabled/cyclic dependencies, and unknown observations. Only a confirmed routed container with confirmed ForwardAuth receives the green lock; absent or unknown auth is amber, with distinct accessible explanations. Check Route link HTTP/HTTPS selection independently of Browser URL overrides, including the HTTPS fallback when TLS is unknown. The lock establishes middleware attachment, not authentication-service availability.
+
 Routing confirmation uses minimal runtime metadata from the existing `/api/rawdata` poll, not the redacted `@file` export snapshot. Confirm only matching HTTP-provider resources owned by the saved server/container identity. API failures invalidate confirmation; observations older than 30 seconds are unconfirmed. The browser URL override is a separate SQLite preference; automatic generation remains unchanged, and clearing the preference resumes automatic resolution.
 
 ## Server settings and routing contracts

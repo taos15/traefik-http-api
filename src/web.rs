@@ -500,6 +500,89 @@ fn validate_browser_url(value: &str) -> Result<String, String> {
     Ok(value.to_owned())
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct RoutingPresentation {
+    label: &'static str,
+    class: &'static str,
+    locked: bool,
+    sr_text: Option<&'static str>,
+    title: Option<&'static str>,
+}
+
+/// Card presentation for a routing state. Only a confirmed route with
+/// confirmed forward auth is green with a lock; known and unknown missing
+/// auth are amber but remain distinguishable to assistive technology.
+fn routing_presentation(state: Option<&str>, forward_auth: Option<bool>) -> RoutingPresentation {
+    let plain = |label, class| RoutingPresentation {
+        label,
+        class,
+        locked: false,
+        sr_text: None,
+        title: None,
+    };
+    match state {
+        Some("routed") => match forward_auth {
+            Some(true) => RoutingPresentation {
+                label: "Routed",
+                class: "routed",
+                locked: true,
+                sr_text: Some(" · protected by forward auth"),
+                title: Some("Routed through Traefik · protected by forward auth"),
+            },
+            Some(false) => RoutingPresentation {
+                label: "Routed",
+                class: "routed-unprotected",
+                locked: false,
+                sr_text: Some(" · no forward auth"),
+                title: Some("Routed through Traefik · no forward auth"),
+            },
+            None => RoutingPresentation {
+                label: "Routed",
+                class: "routed-unprotected",
+                locked: false,
+                sr_text: Some(" · forward auth not confirmed"),
+                title: Some("Routed through Traefik · forward auth not confirmed"),
+            },
+        },
+        Some("unconfirmed") => plain("Generated · unconfirmed", "unconfirmed"),
+        Some("not_routed") => plain("Not routed", "not-routed"),
+        _ => plain("Status unavailable", "unavailable"),
+    }
+}
+
+/// Builds the clickable route URL from the route hostname and observed TLS.
+/// Plain-text fallback (`None`) for anything that is not a DNS hostname;
+/// IDN input is normalised to its punycode (ASCII) form. Never adds a port
+/// or path and never uses the browser URL.
+fn route_href(hostname: &str, tls: Option<bool>) -> Option<String> {
+    // Only letters (including Unicode, for IDN), digits, dots and hyphens:
+    // rejects ports, paths, credentials, IPv6 literals and quoting up front.
+    if hostname.is_empty()
+        || !hostname
+            .chars()
+            .all(|c| c.is_alphanumeric() || c == '.' || c == '-')
+    {
+        return None;
+    }
+    let scheme = if tls == Some(false) { "http" } else { "https" };
+    let parsed = url::Url::parse(&format!("{scheme}://{hostname}/")).ok()?;
+    let host = match parsed.host()? {
+        url::Host::Domain(host) => host.to_owned(),
+        _ => return None,
+    };
+    let valid = host.len() <= 253
+        && host.split('.').all(|label| {
+            !label.is_empty()
+                && label.len() <= 63
+                && !label.starts_with('-')
+                && !label.ends_with('-')
+                && label
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'-')
+        });
+    valid.then(|| format!("{scheme}://{host}"))
+}
+
 fn format_checked_at(timestamp: i64) -> String {
     let days = timestamp.div_euclid(86_400);
     let seconds = timestamp.rem_euclid(86_400);
@@ -542,14 +625,16 @@ fn ContainerCard(container: Container, revision: Signal<u64>, message: Signal<St
     let id = container.id.clone();
     let server_id = container.server_id.clone();
     let routing = container.routing.clone();
-    let (routing_label, routing_class) = match routing.as_ref().map(|value| value.state.as_str()) {
-        Some("routed") => ("Routed", "routed"),
-        Some("unconfirmed") => ("Generated · unconfirmed", "unconfirmed"),
-        Some("not_routed") => ("Not routed", "not-routed"),
-        _ => ("Status unavailable", "unavailable"),
-    };
+    let presentation = routing_presentation(
+        routing.as_ref().map(|value| value.state.as_str()),
+        routing.as_ref().and_then(|value| value.forward_auth),
+    );
     let routing_reason = routing.as_ref().and_then(|value| value.reason.clone());
     let route_hostname = routing.as_ref().and_then(|value| value.hostname.clone());
+    let route_tls = routing.as_ref().and_then(|value| value.tls);
+    let route_link = route_hostname
+        .as_deref()
+        .and_then(|hostname| route_href(hostname, route_tls));
     let checked_at = routing
         .as_ref()
         .and_then(|value| value.checked_at)
@@ -592,9 +677,21 @@ fn ContainerCard(container: Container, revision: Signal<u64>, message: Signal<St
         section {class:"container-routing",aria_label:"Traefik routing status",
             p {class:"routing-line",
                 span {class:"routing-label","Traefik"}
-                span {class:"routing-status {routing_class}","{routing_label}"}
+                span {class:"routing-status {presentation.class}",title:presentation.title,
+                    if presentation.locked {
+                        svg {class:"routing-lock",view_box:"0 0 16 16",fill:"currentColor","aria-hidden":"true","focusable":"false",
+                            path {fill_rule:"evenodd",d:"M4 7V5a4 4 0 1 1 8 0v2h.5A1.5 1.5 0 0 1 14 8.5v5a1.5 1.5 0 0 1-1.5 1.5h-9A1.5 1.5 0 0 1 2 13.5v-5A1.5 1.5 0 0 1 3.5 7H4Zm2 0h4V5a2 2 0 1 0-4 0v2Z"}
+                        }
+                    }
+                    "{presentation.label}"
+                    if let Some(sr_text)=presentation.sr_text {span {class:"visually-hidden","{sr_text}"}}
+                }
             }
-            if let Some(hostname)=route_hostname {p {class:"routing-detail","Route: {hostname}"}}
+            if let Some(link)=route_link {
+                p {class:"routing-detail","Route: " a {href:"{link}",target:"_blank",rel:"noopener noreferrer","{link}"}}
+            } else if let Some(hostname)=route_hostname {
+                p {class:"routing-detail","Route: {hostname}"}
+            }
             if let Some(reason)=routing_reason {p {class:"routing-detail","{reason}"}}
             if let Some(checked_at)=checked_at {small {class:"routing-checked","Last checked: {checked_at}"}}
         }
@@ -603,7 +700,7 @@ fn ContainerCard(container: Container, revision: Signal<u64>, message: Signal<St
                 span {class:"browser-label","Browser URL"}
                 span {class:"url-source","{url_source}"}
             }
-            if let Some(link)=effective_url.clone() {
+            if let Some(link)=effective_url {
                 p {class:"browser-url",a {href:"{link}",target:"_blank",rel:"noopener noreferrer","{link}"}}
             } else {
                 p {class:"browser-url browser-url-empty","No browser URL configured."}
@@ -627,7 +724,7 @@ fn ContainerCard(container: Container, revision: Signal<u64>, message: Signal<St
                     label {"Browser URL"
                         input {r#type:"url",required:true,autofocus:true,disabled:saving_url(),placeholder:"https://app.example.com/path",value:"{url_input}",oninput:move |e|{url_input.set(e.value());url_error.set(None);}}
                     }
-                    small {"Use an absolute HTTP or HTTPS URL. This changes only Open WebUI; Traefik routing is not affected."}
+                    small {"Use an absolute HTTP or HTTPS URL. This changes only the browser link; Traefik routing is not affected."}
                     if let Some(error)=url_error(){p {class:"error",role:"alert","{error}"}}
                     div {class:"actions",
                         button {r#type:"submit",disabled:saving_url(),if saving_url(){"Saving…"}else{"Save"}}
@@ -656,8 +753,7 @@ fn ContainerCard(container: Container, revision: Signal<u64>, message: Signal<St
             }
         }}},"Inspect"}
         if let Some(info)=details(){details {summary {"Container details"}pre {"{info}"}}}
-        div {class:"actions",
-            if let Some(link)=effective_url {a {href:"{link}",target:"_blank",rel:"noopener noreferrer","Open WebUI"}}
+        div {class:"actions lifecycle-actions",
             for command in match container.state.as_str(){"running"=>vec!["stop","restart","pause"],"paused"=>vec!["unpause","stop"],"exited"|"created"=>vec!["start"],_=>vec![]} {
                 button {onclick:{let id=id.clone();let server_id=server_id.clone();move |_|{let id=id.clone();let server_id=server_id.clone();async move{
                     let body=serde_json::json!({"command":command}).to_string();
@@ -670,7 +766,137 @@ fn ContainerCard(container: Container, revision: Signal<u64>, message: Signal<St
 
 #[cfg(test)]
 mod container_card_tests {
-    use super::{format_checked_at, validate_browser_url};
+    use super::{format_checked_at, route_href, routing_presentation, validate_browser_url};
+
+    #[test]
+    fn routed_presentation_distinguishes_protected_unprotected_and_unknown() {
+        let protected = routing_presentation(Some("routed"), Some(true));
+        assert_eq!(
+            (protected.label, protected.class, protected.locked),
+            ("Routed", "routed", true)
+        );
+        assert_eq!(protected.sr_text, Some(" · protected by forward auth"));
+        assert_eq!(
+            protected.title,
+            Some("Routed through Traefik · protected by forward auth")
+        );
+
+        let unprotected = routing_presentation(Some("routed"), Some(false));
+        assert_eq!(
+            (unprotected.label, unprotected.class, unprotected.locked),
+            ("Routed", "routed-unprotected", false)
+        );
+        assert_eq!(unprotected.sr_text, Some(" · no forward auth"));
+        assert_eq!(
+            unprotected.title,
+            Some("Routed through Traefik · no forward auth")
+        );
+
+        let unknown = routing_presentation(Some("routed"), None);
+        assert_eq!(
+            (unknown.label, unknown.class, unknown.locked),
+            ("Routed", "routed-unprotected", false)
+        );
+        assert_eq!(unknown.sr_text, Some(" · forward auth not confirmed"));
+        assert_eq!(
+            unknown.title,
+            Some("Routed through Traefik · forward auth not confirmed")
+        );
+        assert_ne!(unknown.sr_text, unprotected.sr_text);
+        assert_ne!(unknown.title, unprotected.title);
+    }
+
+    #[test]
+    fn non_routed_presentation_is_unchanged_and_never_locked() {
+        for auth in [Some(true), Some(false), None] {
+            for (state, label, class) in [
+                (
+                    Some("unconfirmed"),
+                    "Generated · unconfirmed",
+                    "unconfirmed",
+                ),
+                (Some("not_routed"), "Not routed", "not-routed"),
+                (Some("unavailable"), "Status unavailable", "unavailable"),
+                (Some("something-else"), "Status unavailable", "unavailable"),
+                (None, "Status unavailable", "unavailable"),
+            ] {
+                let p = routing_presentation(state, auth);
+                assert_eq!((p.label, p.class), (label, class), "{state:?} {auth:?}");
+                assert!(!p.locked, "{state:?} {auth:?} locked");
+                assert_eq!(p.sr_text, None);
+                assert_eq!(p.title, None);
+            }
+        }
+    }
+
+    #[test]
+    fn route_href_scheme_follows_observed_tls_with_https_default() {
+        assert_eq!(
+            route_href("app.example.com", Some(false)).as_deref(),
+            Some("http://app.example.com")
+        );
+        assert_eq!(
+            route_href("app.example.com", Some(true)).as_deref(),
+            Some("https://app.example.com")
+        );
+        assert_eq!(
+            route_href("app.example.com", None).as_deref(),
+            Some("https://app.example.com")
+        );
+    }
+
+    #[test]
+    fn route_href_accepts_dns_hostnames_including_punycode() {
+        assert_eq!(
+            route_href("App.Example.COM", None).as_deref(),
+            Some("https://app.example.com")
+        );
+        assert_eq!(
+            route_href("xn--bcher-kva.example", None).as_deref(),
+            Some("https://xn--bcher-kva.example")
+        );
+        assert_eq!(
+            route_href("bücher.example", None).as_deref(),
+            Some("https://xn--bcher-kva.example")
+        );
+        assert_eq!(
+            route_href("my-app.lan", Some(false)).as_deref(),
+            Some("http://my-app.lan")
+        );
+        assert_eq!(
+            route_href("localhost", None).as_deref(),
+            Some("https://localhost")
+        );
+    }
+
+    #[test]
+    fn route_href_rejects_non_hostnames() {
+        let long_label = format!("{}.example.com", "a".repeat(64));
+        for value in [
+            "",
+            " ",
+            "app example.com",
+            "app.example.com/path",
+            "app.example.com:8443",
+            "user@app.example.com",
+            "app.example.com?x=1",
+            "app.example.com#x",
+            "`app.example.com`",
+            "javascript:alert(1)",
+            "[::1]",
+            "192.168.1.20",
+            "-app.example.com",
+            "app-.example.com",
+            "app..example.com",
+            "app_1.example.com",
+            "app.example.com%2F",
+            "app\\example.com",
+            "\"app.example.com\"",
+            long_label.as_str(),
+        ] {
+            assert_eq!(route_href(value, None), None, "accepted {value:?}");
+        }
+    }
 
     #[test]
     fn browser_url_accepts_absolute_http_urls_with_query_and_fragment() {
